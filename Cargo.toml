@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/fileflow-core", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.77"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+regex = "1"
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+tempfile = "3"
+sha2 = "0.10"
+notify = "6"
+crossbeam-channel = "0.5"
+trash = "5"
+kamadak-exif = "0.5"
+lopdf = { version = "0.32", default-features = false, features = ["pom_parser"] }

@@ -1,0 +1,39 @@
+[package]
+name = "fileflow-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FileFlow core: rule engine, planner, safety, journal, undo."
+
+[lib]
+name = "fileflow_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+time.workspace = true
+uuid.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+notify.workspace = true
+crossbeam-channel.workspace = true
+trash = { workspace = true, optional = true }
+kamadak-exif = { workspace = true, optional = true }
+lopdf = { workspace = true, optional = true }
+
+[features]
+default = ["os-trash", "metadata"]
+# Delegate the Trash action to the native OS trash. Off ⇒ FileFlow moves the
+# file to a local `.fileflow-trash/` folder next to the source root.
+os-trash = ["dep:trash"]
+# Optional PDF and EXIF metadata condition evaluation. Reads local files only.
+metadata = ["dep:kamadak-exif", "dep:lopdf"]
+
+[dev-dependencies]
+tempfile.workspace = true
+anyhow.workspace = true
+lopdf.workspace = true

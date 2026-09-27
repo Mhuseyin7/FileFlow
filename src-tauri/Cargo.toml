@@ -1,0 +1,37 @@
+[package]
+name = "fileflow-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "fileflow_app_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fileflow"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.0.0-beta", features = [], optional = true }
+
+[dependencies]
+fileflow-core = { path = "../crates/fileflow-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+time.workspace = true
+uuid.workspace = true
+tauri = { version = "2.0.0-beta", features = [], optional = true }
+tauri-plugin-dialog = { version = "2.0.0-beta", optional = true }
+
+[features]
+# The `tauri` feature pulls in the desktop shell + Tauri build script. It's off
+# in the workspace by default so `cargo test -p fileflow-core` doesn't require
+# a WebView2 / GTK toolchain. Enable with:
+#
+#     cargo build -p fileflow-app --features tauri
+default = []
+tauri = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-build"]
