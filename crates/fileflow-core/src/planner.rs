@@ -2,9 +2,7 @@
 //! touches the filesystem; the safety validator and executor come after.
 
 use crate::error::Result;
-use crate::model::{
-    Action, ConditionNode, FileMeta, OpKind, PlannedOp, Rule, RuleContinuation,
-};
+use crate::model::{Action, ConditionNode, FileMeta, OpKind, PlannedOp, Rule, RuleContinuation};
 use crate::rename;
 use crate::rule::evaluate;
 use std::path::{Path, PathBuf};
@@ -130,7 +128,11 @@ fn collect_extensions(node: &ConditionNode) -> Option<Vec<String>> {
             }
         }
     });
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn collect_sources(node: &ConditionNode, explicit: &[PathBuf]) -> Vec<PathBuf> {
@@ -167,7 +169,10 @@ fn overlap(a: &Path, b: &Path) -> bool {
 
 /// Aggregate metrics for the preview banner.
 pub fn summarize(ops: &[PlannedOp]) -> PreviewSummary {
-    let mut s = PreviewSummary { count: ops.len(), ..Default::default() };
+    let mut s = PreviewSummary {
+        count: ops.len(),
+        ..Default::default()
+    };
     for op in ops {
         s.total_bytes = s.total_bytes.saturating_add(op.size);
         if !op.warnings.is_empty() {
@@ -185,7 +190,9 @@ pub struct PreviewSummary {
 }
 
 impl PreviewSummary {
-    pub fn human_bytes(&self) -> String { human_bytes(self.total_bytes) }
+    pub fn human_bytes(&self) -> String {
+        human_bytes(self.total_bytes)
+    }
 }
 
 pub fn human_bytes(bytes: u64) -> String {

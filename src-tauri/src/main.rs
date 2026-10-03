@@ -1,5 +1,8 @@
 // Windows: hide the console when the tauri feature is on (release only).
-#![cfg_attr(all(not(debug_assertions), feature = "tauri"), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), feature = "tauri"),
+    windows_subsystem = "windows"
+)]
 
 fn main() {
     #[cfg(feature = "tauri")]
@@ -57,7 +60,8 @@ fn dirs_local_data_dir() -> Option<std::path::PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support"))
+        std::env::var_os("HOME")
+            .map(|h| std::path::PathBuf::from(h).join("Library/Application Support"))
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {

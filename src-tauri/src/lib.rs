@@ -5,5 +5,5 @@
 //! The command layer here is deliberately thin: it wraps `fileflow-core` and
 //! serializes to/from serde_json.
 
-pub mod state;
 pub mod commands;
+pub mod state;

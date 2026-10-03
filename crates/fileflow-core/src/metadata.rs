@@ -30,15 +30,24 @@ pub fn read_photo(path: &Path) -> Option<PhotoMeta> {
     let capture_date = exif
         .get_field(Tag::DateTimeOriginal, In::PRIMARY)
         .and_then(|f| parse_exif_datetime(&f.display_value().to_string()));
-    let camera = exif
-        .get_field(Tag::Model, In::PRIMARY)
-        .map(|f| f.display_value().with_unit(&exif).to_string().trim_matches('"').to_string());
+    let camera = exif.get_field(Tag::Model, In::PRIMARY).map(|f| {
+        f.display_value()
+            .with_unit(&exif)
+            .to_string()
+            .trim_matches('"')
+            .to_string()
+    });
 
-    Some(PhotoMeta { capture_date, camera })
+    Some(PhotoMeta {
+        capture_date,
+        camera,
+    })
 }
 
 #[cfg(not(feature = "metadata"))]
-pub fn read_photo(_path: &Path) -> Option<PhotoMeta> { None }
+pub fn read_photo(_path: &Path) -> Option<PhotoMeta> {
+    None
+}
 
 #[cfg(feature = "metadata")]
 pub fn read_pdf(path: &Path) -> Option<PdfMeta> {
@@ -58,7 +67,9 @@ pub fn read_pdf(path: &Path) -> Option<PdfMeta> {
 }
 
 #[cfg(not(feature = "metadata"))]
-pub fn read_pdf(_path: &Path) -> Option<PdfMeta> { None }
+pub fn read_pdf(_path: &Path) -> Option<PdfMeta> {
+    None
+}
 
 #[cfg(feature = "metadata")]
 fn parse_exif_datetime(s: &str) -> Option<OffsetDateTime> {

@@ -123,9 +123,9 @@ fn classify(kind: &EventKind, path: PathBuf) -> Option<RawSignal> {
     match kind {
         EventKind::Create(CreateKind::File | CreateKind::Any) => Some(RawSignal::Touched(path)),
         EventKind::Modify(ModifyKind::Data(_)) => Some(RawSignal::Touched(path)),
-        EventKind::Modify(ModifyKind::Name(RenameMode::To | RenameMode::Any | RenameMode::Both)) => {
-            Some(RawSignal::Touched(path))
-        }
+        EventKind::Modify(ModifyKind::Name(
+            RenameMode::To | RenameMode::Any | RenameMode::Both,
+        )) => Some(RawSignal::Touched(path)),
         EventKind::Modify(ModifyKind::Name(RenameMode::From)) => Some(RawSignal::Removed(path)),
         EventKind::Remove(_) => Some(RawSignal::Removed(path)),
         _ => None,
@@ -160,10 +160,13 @@ fn spawn_pipeline(
                         if is_ignored(&p) {
                             continue;
                         }
-                        pending.entry(p).or_insert_with(|| PendingEntry {
-                            last_signal: Instant::now(),
-                            removed: false,
-                        }).last_signal = Instant::now();
+                        pending
+                            .entry(p)
+                            .or_insert_with(|| PendingEntry {
+                                last_signal: Instant::now(),
+                                removed: false,
+                            })
+                            .last_signal = Instant::now();
                     }
                     RawSignal::Removed(p) => {
                         if let Some(e) = pending.get_mut(&p) {

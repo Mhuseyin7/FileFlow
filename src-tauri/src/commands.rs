@@ -97,7 +97,10 @@ pub fn ff_preview(state: &AppState, root: &Path) -> anyhow::Result<PreviewResult
         summary,
         errors: errors
             .into_iter()
-            .map(|(id, e)| PreviewError { op_id: id, message: e.to_string() })
+            .map(|(id, e)| PreviewError {
+                op_id: id,
+                message: e.to_string(),
+            })
             .collect(),
     })
 }
@@ -123,7 +126,13 @@ pub fn ff_run(state: &AppState, ops: Vec<PlannedOp>, dry_run: bool) -> Vec<RunOu
         if !dry_run {
             let _ = journal.record_start(&op);
         }
-        match execute(&op, ExecuteOpts { dry_run, ..ExecuteOpts::default() }) {
+        match execute(
+            &op,
+            ExecuteOpts {
+                dry_run,
+                ..ExecuteOpts::default()
+            },
+        ) {
             Ok(e) => {
                 if !dry_run {
                     let _ = journal.record_success(&e);
@@ -205,13 +214,19 @@ pub mod tauri_bindings {
     use tauri::State;
 
     #[tauri::command]
-    pub fn list_rules(state: State<'_, AppState>) -> Vec<Rule> { ff_list_rules(&state) }
+    pub fn list_rules(state: State<'_, AppState>) -> Vec<Rule> {
+        ff_list_rules(&state)
+    }
 
     #[tauri::command]
-    pub fn save_rule(state: State<'_, AppState>, rule: Rule) -> Rule { ff_save_rule(&state, rule) }
+    pub fn save_rule(state: State<'_, AppState>, rule: Rule) -> Rule {
+        ff_save_rule(&state, rule)
+    }
 
     #[tauri::command]
-    pub fn delete_rule(state: State<'_, AppState>, id: String) { ff_delete_rule(&state, &id); }
+    pub fn delete_rule(state: State<'_, AppState>, id: String) {
+        ff_delete_rule(&state, &id);
+    }
 
     #[tauri::command]
     pub fn set_sandbox_roots(state: State<'_, AppState>, roots: Vec<PathBuf>) {
@@ -249,7 +264,9 @@ pub mod tauri_bindings {
     }
 
     #[tauri::command]
-    pub fn stop_watcher(state: State<'_, AppState>) { ff_stop_watcher(&state); }
+    pub fn stop_watcher(state: State<'_, AppState>) {
+        ff_stop_watcher(&state);
+    }
 
     #[tauri::command]
     pub fn watcher_running(state: State<'_, AppState>) -> bool {

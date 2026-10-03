@@ -17,9 +17,14 @@ fn ext_rule(name: &str, ext: &str, dest: &str, prio: i32, then: RuleContinuation
         enabled: true,
         profile: None,
         condition: ConditionNode::Leaf {
-            condition: Condition::Extension { any_of: vec![ext.into()] },
+            condition: Condition::Extension {
+                any_of: vec![ext.into()],
+            },
         },
-        action: Action::Move { dest_dir: PathBuf::from(dest), rename: None },
+        action: Action::Move {
+            dest_dir: PathBuf::from(dest),
+            rename: None,
+        },
         on_conflict: CollisionPolicy::Rename,
         then,
         sources: vec![],
@@ -29,18 +34,33 @@ fn ext_rule(name: &str, ext: &str, dest: &str, prio: i32, then: RuleContinuation
 
 #[test]
 fn plan_returns_move_op_for_matching_file() {
-    let rules = vec![ext_rule("pdfs", "pdf", "/docs/PDF", 10, RuleContinuation::StopAfterAction)];
+    let rules = vec![ext_rule(
+        "pdfs",
+        "pdf",
+        "/docs/PDF",
+        10,
+        RuleContinuation::StopAfterAction,
+    )];
     let files = vec![synth("a.pdf", "/downloads", 100, 1)];
     let ops = plan(&rules, &files, OffsetDateTime::now_utc());
     assert_eq!(ops.len(), 1);
     assert!(matches!(ops[0].kind, OpKind::Move));
-    assert_eq!(ops[0].destination.as_ref().unwrap(), &PathBuf::from("/docs/PDF/a.pdf"));
+    assert_eq!(
+        ops[0].destination.as_ref().unwrap(),
+        &PathBuf::from("/docs/PDF/a.pdf")
+    );
     assert_eq!(ops[0].rule_name, "pdfs");
 }
 
 #[test]
 fn disabled_rules_are_skipped() {
-    let mut r = ext_rule("pdfs", "pdf", "/docs/PDF", 10, RuleContinuation::StopAfterAction);
+    let mut r = ext_rule(
+        "pdfs",
+        "pdf",
+        "/docs/PDF",
+        10,
+        RuleContinuation::StopAfterAction,
+    );
     r.enabled = false;
     let files = vec![synth("a.pdf", "/downloads", 100, 1)];
     assert!(plan(&[r], &files, OffsetDateTime::now_utc()).is_empty());
@@ -72,7 +92,13 @@ fn continue_yields_both_rules() {
 
 #[test]
 fn sources_filter_restricts_rule() {
-    let mut r = ext_rule("pdfs", "pdf", "/docs/PDF", 10, RuleContinuation::StopAfterAction);
+    let mut r = ext_rule(
+        "pdfs",
+        "pdf",
+        "/docs/PDF",
+        10,
+        RuleContinuation::StopAfterAction,
+    );
     r.sources = vec![PathBuf::from("/downloads")];
     let outside = synth("a.pdf", "/other", 1, 1);
     let inside = synth("a.pdf", "/downloads", 1, 1);
@@ -83,13 +109,31 @@ fn sources_filter_restricts_rule() {
 
 #[test]
 fn overlap_detected_between_pdf_all_and_pdf_invoice() {
-    let a = ext_rule("all-pdf", "pdf", "/A", 10, RuleContinuation::StopAfterAction);
-    let mut b = ext_rule("invoice-pdf", "pdf", "/B", 20, RuleContinuation::StopAfterAction);
+    let a = ext_rule(
+        "all-pdf",
+        "pdf",
+        "/A",
+        10,
+        RuleContinuation::StopAfterAction,
+    );
+    let mut b = ext_rule(
+        "invoice-pdf",
+        "pdf",
+        "/B",
+        20,
+        RuleContinuation::StopAfterAction,
+    );
     b.condition = ConditionNode::All {
         children: vec![
-            ConditionNode::Leaf { condition: Condition::Extension { any_of: vec!["pdf".into()] } },
             ConditionNode::Leaf {
-                condition: Condition::FilenameContains { needle: "invoice".into() },
+                condition: Condition::Extension {
+                    any_of: vec!["pdf".into()],
+                },
+            },
+            ConditionNode::Leaf {
+                condition: Condition::FilenameContains {
+                    needle: "invoice".into(),
+                },
             },
         ],
     };
@@ -99,7 +143,13 @@ fn overlap_detected_between_pdf_all_and_pdf_invoice() {
 
 #[test]
 fn summary_totals_bytes() {
-    let rules = vec![ext_rule("pdfs", "pdf", "/docs", 10, RuleContinuation::StopAfterAction)];
+    let rules = vec![ext_rule(
+        "pdfs",
+        "pdf",
+        "/docs",
+        10,
+        RuleContinuation::StopAfterAction,
+    )];
     let files = vec![
         synth("a.pdf", "/downloads", 1_000, 1),
         synth("b.pdf", "/downloads", 2_000, 1),

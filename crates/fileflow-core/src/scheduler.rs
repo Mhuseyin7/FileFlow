@@ -51,11 +51,7 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn start<F, S>(
-        get_rules: F,
-        store: S,
-        tick_every: Duration,
-    ) -> Self
+    pub fn start<F, S>(get_rules: F, store: S, tick_every: Duration) -> Self
     where
         F: Fn() -> Vec<Rule> + Send + 'static,
         S: LastRunStore + 'static,
@@ -77,7 +73,10 @@ impl Scheduler {
                     if !is_due(&rule, &store, now) {
                         continue;
                     }
-                    let _ = tx.send(ScheduleTick { rule_id: rule.id.clone(), at: now });
+                    let _ = tx.send(ScheduleTick {
+                        rule_id: rule.id.clone(),
+                        at: now,
+                    });
                     store.record_run(&rule.id, now);
                 }
                 thread::sleep(tick_every);

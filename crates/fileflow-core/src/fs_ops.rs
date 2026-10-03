@@ -46,7 +46,11 @@ pub struct ExecuteOpts {
 
 impl Default for ExecuteOpts {
     fn default() -> Self {
-        Self { verify_hash: true, dry_run: false, use_os_trash: cfg!(feature = "os-trash") }
+        Self {
+            verify_hash: true,
+            dry_run: false,
+            use_os_trash: cfg!(feature = "os-trash"),
+        }
     }
 }
 
@@ -80,7 +84,8 @@ pub fn execute(op: &PlannedOp, opts: ExecuteOpts) -> Result<Executed> {
 }
 
 fn require<'a>(o: &'a Option<PathBuf>, what: &str) -> Result<&'a PathBuf> {
-    o.as_ref().ok_or_else(|| Error::Other(format!("missing {what}")))
+    o.as_ref()
+        .ok_or_else(|| Error::Other(format!("missing {what}")))
 }
 
 fn run_create_folder(op: &PlannedOp, opts: ExecuteOpts) -> Result<Executed> {
@@ -257,9 +262,7 @@ fn run_trash(op: &PlannedOp, opts: ExecuteOpts) -> Result<Executed> {
 }
 
 fn trash_dir_for(p: &Path) -> Result<PathBuf> {
-    let parent = p
-        .parent()
-        .ok_or_else(|| Error::Other("no parent".into()))?;
+    let parent = p.parent().ok_or_else(|| Error::Other("no parent".into()))?;
     Ok(parent.join(".fileflow-trash"))
 }
 

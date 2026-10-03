@@ -44,7 +44,10 @@ fn starts_with(child: &Path, parent: &Path) -> bool {
 
 /// Validate a batch of ops; annotates warnings in place and returns the
 /// filtered list (blocking errors are removed) alongside per-op errors.
-pub fn validate(sandbox: &Sandbox, mut ops: Vec<PlannedOp>) -> (Vec<PlannedOp>, Vec<(String, Error)>) {
+pub fn validate(
+    sandbox: &Sandbox,
+    mut ops: Vec<PlannedOp>,
+) -> (Vec<PlannedOp>, Vec<(String, Error)>) {
     let mut errors = Vec::new();
     let mut ok = Vec::with_capacity(ops.len());
     for mut op in ops.drain(..) {
@@ -53,8 +56,7 @@ pub fn validate(sandbox: &Sandbox, mut ops: Vec<PlannedOp>) -> (Vec<PlannedOp>, 
             Err(e) => errors.push((op.id.clone(), e)),
         }
     }
-    ok
-        .iter_mut()
+    ok.iter_mut()
         .for_each(|op| dedupe_warnings(&mut op.warnings));
     (ok, errors)
 }
@@ -67,18 +69,25 @@ fn dedupe_warnings(w: &mut Vec<String>) {
 fn validate_one(sandbox: &Sandbox, op: &mut PlannedOp) -> Result<()> {
     if let Some(src) = &op.source {
         if sandbox.is_forbidden(src) {
-            return Err(Error::Safety(format!("source in forbidden root: {}", src.display())));
+            return Err(Error::Safety(format!(
+                "source in forbidden root: {}",
+                src.display()
+            )));
         }
         // Source doesn't strictly have to be inside the sandbox — the user may
         // move a file into a sandbox — but if it isn't, that's worth warning
         // about, since watchers only fire inside sandbox roots.
         if !sandbox.allowed_roots.is_empty() && !sandbox.contains(src) {
-            op.warnings.push(format!("source outside sandbox: {}", src.display()));
+            op.warnings
+                .push(format!("source outside sandbox: {}", src.display()));
         }
     }
     if let Some(dst) = &op.destination {
         if sandbox.is_forbidden(dst) {
-            return Err(Error::Safety(format!("destination in forbidden root: {}", dst.display())));
+            return Err(Error::Safety(format!(
+                "destination in forbidden root: {}",
+                dst.display()
+            )));
         }
         if !sandbox.allowed_roots.is_empty() && !sandbox.contains(dst) {
             // For destinations we're stricter — never write outside sandbox.
@@ -102,9 +111,15 @@ fn validate_one(sandbox: &Sandbox, op: &mut PlannedOp) -> Result<()> {
         // Overwrite is only allowed via explicit Replace policy.
         if dst.exists()
             && matches!(op.kind, OpKind::Move | OpKind::Copy | OpKind::Rename)
-            && !matches!(op.collision, CollisionPolicy::Replace | CollisionPolicy::Rename | CollisionPolicy::Ask)
+            && !matches!(
+                op.collision,
+                CollisionPolicy::Replace | CollisionPolicy::Rename | CollisionPolicy::Ask
+            )
         {
-            return Err(Error::Conflict(format!("destination exists: {}", dst.display())));
+            return Err(Error::Conflict(format!(
+                "destination exists: {}",
+                dst.display()
+            )));
         }
     }
     // Symlink hop-out: if source is a symlink pointing outside the sandbox,

@@ -50,7 +50,9 @@ pub fn render(template: &str, file: &FileMeta, now: OffsetDateTime) -> Result<St
                         let (h, mi, s) = (now.hour(), now.minute(), now.second());
                         format!("{y:04}-{m:02}-{d:02}_{h:02}-{mi:02}-{s:02}")
                     }
-                    other => return Err(Error::InvalidFilename(format!("unknown token {{{other}}}"))),
+                    other => {
+                        return Err(Error::InvalidFilename(format!("unknown token {{{other}}}")))
+                    }
                 };
                 out.push_str(&replacement);
                 i += end + 2;
@@ -69,7 +71,13 @@ pub fn sanitize_filename(name: &str) -> Result<String> {
     }
     let cleaned: String = name
         .chars()
-        .map(|c| if INVALID.contains(&c) || c.is_control() { '_' } else { c })
+        .map(|c| {
+            if INVALID.contains(&c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     // Windows disallows trailing `.` or space.
     let trimmed = cleaned.trim_end_matches(['.', ' ']).to_string();

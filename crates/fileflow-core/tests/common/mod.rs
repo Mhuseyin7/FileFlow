@@ -1,5 +1,5 @@
 use fileflow_core::category::Category;
-use fileflow_core::model::{FileMeta};
+use fileflow_core::model::FileMeta;
 use std::path::PathBuf;
 use time::OffsetDateTime;
 

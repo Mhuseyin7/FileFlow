@@ -1,4 +1,6 @@
-use fileflow_core::model::{Action, CollisionPolicy, ConditionNode, Rule, RuleContinuation, Trigger};
+use fileflow_core::model::{
+    Action, CollisionPolicy, ConditionNode, Rule, RuleContinuation, Trigger,
+};
 use fileflow_core::scheduler::{is_due, MemoryLastRunStore};
 use std::path::PathBuf;
 use time::OffsetDateTime;
@@ -12,7 +14,10 @@ fn rule(trigger: Trigger, enabled: bool) -> Rule {
         enabled,
         profile: None,
         condition: ConditionNode::All { children: vec![] },
-        action: Action::Move { dest_dir: PathBuf::from("/x"), rename: None },
+        action: Action::Move {
+            dest_dir: PathBuf::from("/x"),
+            rename: None,
+        },
         on_conflict: CollisionPolicy::Rename,
         then: RuleContinuation::StopAfterAction,
         sources: vec![],

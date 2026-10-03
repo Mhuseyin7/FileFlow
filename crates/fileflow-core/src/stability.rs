@@ -43,7 +43,10 @@ struct Observation {
 
 impl StabilityWatcher {
     pub fn new(min_quiet: Duration) -> Self {
-        Self { min_quiet, last_seen: Default::default() }
+        Self {
+            min_quiet,
+            last_seen: Default::default(),
+        }
     }
 
     /// Observe a file's current size and return `true` if it appears stable.
@@ -55,10 +58,10 @@ impl StabilityWatcher {
                 return false;
             }
         }
-        let entry = self.last_seen.entry(path.to_path_buf()).or_insert(Observation {
-            size,
-            at: now,
-        });
+        let entry = self
+            .last_seen
+            .entry(path.to_path_buf())
+            .or_insert(Observation { size, at: now });
         if entry.size != size {
             entry.size = size;
             entry.at = now;

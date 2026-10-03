@@ -92,11 +92,15 @@ fn eval_leaf(c: &Condition, f: &FileMeta, now: OffsetDateTime) -> (bool, String)
             };
             (ok, format!("mime in [{}]", any_of.join(", ")))
         }
-        Condition::SizeBytes { op, value } => {
-            (op.compare(&f.size, value), format!("size {} {}", op_label(*op), value))
-        }
+        Condition::SizeBytes { op, value } => (
+            op.compare(&f.size, value),
+            format!("size {} {}", op_label(*op), value),
+        ),
         Condition::AgeDays { op, value } => match f.age_days(now) {
-            Some(age) => (op.compare(&age, value), format!("age {} {}d", op_label(*op), value)),
+            Some(age) => (
+                op.compare(&age, value),
+                format!("age {} {}d", op_label(*op), value),
+            ),
             None => (false, format!("age unknown vs {value}d")),
         },
         Condition::Hidden { equals } => (f.is_hidden == *equals, format!("hidden = {equals}")),
@@ -118,7 +122,10 @@ fn eval_leaf(c: &Condition, f: &FileMeta, now: OffsetDateTime) -> (bool, String)
             match capture {
                 Some(t) => {
                     let age = (now - t).whole_days();
-                    (op.compare(&age, value), format!("photo age {} {}d", op_label(*op), value))
+                    (
+                        op.compare(&age, value),
+                        format!("photo age {} {}d", op_label(*op), value),
+                    )
                 }
                 None => (false, format!("photo age unknown vs {value}d")),
             }
@@ -126,7 +133,10 @@ fn eval_leaf(c: &Condition, f: &FileMeta, now: OffsetDateTime) -> (bool, String)
         Condition::PdfPageCount { op, value } => {
             let meta = crate::metadata::read_pdf(&f.path);
             match meta.and_then(|m| m.page_count) {
-                Some(n) => (op.compare(&n, value), format!("pdf pages {} {}", op_label(*op), value)),
+                Some(n) => (
+                    op.compare(&n, value),
+                    format!("pdf pages {} {}", op_label(*op), value),
+                ),
                 None => (false, format!("pdf pages unknown vs {value}")),
             }
         }

@@ -8,7 +8,12 @@ use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-fn planned(kind: OpKind, src: Option<PathBuf>, dst: Option<PathBuf>, policy: CollisionPolicy) -> PlannedOp {
+fn planned(
+    kind: OpKind,
+    src: Option<PathBuf>,
+    dst: Option<PathBuf>,
+    policy: CollisionPolicy,
+) -> PlannedOp {
     PlannedOp {
         id: PlannedOp::new_id(),
         rule_id: "rule".into(),
@@ -29,8 +34,20 @@ fn move_atomic_same_dir() -> anyhow::Result<()> {
     let src = dir.path().join("a.txt");
     fs::write(&src, b"hello")?;
     let dst = dir.path().join("moved").join("a.txt");
-    let op = planned(OpKind::Move, Some(src.clone()), Some(dst.clone()), CollisionPolicy::Rename);
-    let e = execute(&op, ExecuteOpts { verify_hash: false, dry_run: false, use_os_trash: false })?;
+    let op = planned(
+        OpKind::Move,
+        Some(src.clone()),
+        Some(dst.clone()),
+        CollisionPolicy::Rename,
+    );
+    let e = execute(
+        &op,
+        ExecuteOpts {
+            verify_hash: false,
+            dry_run: false,
+            use_os_trash: false,
+        },
+    )?;
     assert!(dst.exists());
     assert!(!src.exists());
     assert_eq!(e.bytes, 5);
@@ -45,8 +62,20 @@ fn move_collision_rename_gets_suffix() -> anyhow::Result<()> {
     fs::write(&src, b"x")?;
     // Pre-existing destination.
     fs::write(&dst, b"y")?;
-    let op = planned(OpKind::Move, Some(src.clone()), Some(dst.clone()), CollisionPolicy::Rename);
-    let e = execute(&op, ExecuteOpts { verify_hash: false, dry_run: false, use_os_trash: false })?;
+    let op = planned(
+        OpKind::Move,
+        Some(src.clone()),
+        Some(dst.clone()),
+        CollisionPolicy::Rename,
+    );
+    let e = execute(
+        &op,
+        ExecuteOpts {
+            verify_hash: false,
+            dry_run: false,
+            use_os_trash: false,
+        },
+    )?;
     // Rename policy should have written to `a.txt.dest (1)` or similar.
     assert!(e.destination.unwrap().to_string_lossy().contains("(1)"));
     Ok(())
@@ -59,8 +88,20 @@ fn move_collision_skip_errors() -> anyhow::Result<()> {
     let dst = dir.path().join("a.txt.dest");
     fs::write(&src, b"x")?;
     fs::write(&dst, b"y")?;
-    let op = planned(OpKind::Move, Some(src.clone()), Some(dst.clone()), CollisionPolicy::Skip);
-    let r = execute(&op, ExecuteOpts { verify_hash: false, dry_run: false, use_os_trash: false });
+    let op = planned(
+        OpKind::Move,
+        Some(src.clone()),
+        Some(dst.clone()),
+        CollisionPolicy::Skip,
+    );
+    let r = execute(
+        &op,
+        ExecuteOpts {
+            verify_hash: false,
+            dry_run: false,
+            use_os_trash: false,
+        },
+    );
     assert!(r.is_err());
     // Source untouched
     assert!(src.exists());
@@ -73,8 +114,20 @@ fn dry_run_does_not_touch_filesystem() -> anyhow::Result<()> {
     let src = dir.path().join("a.txt");
     fs::write(&src, b"hello")?;
     let dst = dir.path().join("moved").join("a.txt");
-    let op = planned(OpKind::Move, Some(src.clone()), Some(dst.clone()), CollisionPolicy::Rename);
-    execute(&op, ExecuteOpts { verify_hash: false, dry_run: true, use_os_trash: false })?;
+    let op = planned(
+        OpKind::Move,
+        Some(src.clone()),
+        Some(dst.clone()),
+        CollisionPolicy::Rename,
+    );
+    execute(
+        &op,
+        ExecuteOpts {
+            verify_hash: false,
+            dry_run: true,
+            use_os_trash: false,
+        },
+    )?;
     assert!(src.exists());
     assert!(!dst.exists());
     Ok(())
@@ -88,8 +141,20 @@ fn copy_verify_produces_identical_file() -> anyhow::Result<()> {
     // ~10 MB of pseudo-random data to exercise the streaming path.
     let payload: Vec<u8> = (0..(10 * 1024 * 1024)).map(|i| (i * 31) as u8).collect();
     fs::write(&src, &payload)?;
-    let op = planned(OpKind::Copy, Some(src.clone()), Some(dst.clone()), CollisionPolicy::Rename);
-    let e = execute(&op, ExecuteOpts { verify_hash: true, dry_run: false, use_os_trash: false })?;
+    let op = planned(
+        OpKind::Copy,
+        Some(src.clone()),
+        Some(dst.clone()),
+        CollisionPolicy::Rename,
+    );
+    let e = execute(
+        &op,
+        ExecuteOpts {
+            verify_hash: true,
+            dry_run: false,
+            use_os_trash: false,
+        },
+    )?;
     assert_eq!(e.bytes as usize, payload.len());
     assert_eq!(fs::read(&dst)?, payload);
     assert!(src.exists(), "copy must not delete source");
@@ -101,10 +166,19 @@ fn trash_moves_to_local_trash_folder_when_os_trash_disabled() -> anyhow::Result<
     let dir = TempDir::new()?;
     let src = dir.path().join("a.txt");
     fs::write(&src, b"bye")?;
-    let op = planned(OpKind::Trash, Some(src.clone()), None, CollisionPolicy::Rename);
+    let op = planned(
+        OpKind::Trash,
+        Some(src.clone()),
+        None,
+        CollisionPolicy::Rename,
+    );
     let e = execute(
         &op,
-        ExecuteOpts { verify_hash: false, dry_run: false, use_os_trash: false },
+        ExecuteOpts {
+            verify_hash: false,
+            dry_run: false,
+            use_os_trash: false,
+        },
     )?;
     assert!(!src.exists());
     let dst = e.destination.unwrap();
@@ -125,10 +199,19 @@ fn trash_routes_to_os_trash_when_enabled() -> anyhow::Result<()> {
     let dir = TempDir::new()?;
     let src = dir.path().join("os-trash-target.txt");
     fs::write(&src, b"bye")?;
-    let op = planned(OpKind::Trash, Some(src.clone()), None, CollisionPolicy::Rename);
+    let op = planned(
+        OpKind::Trash,
+        Some(src.clone()),
+        None,
+        CollisionPolicy::Rename,
+    );
     let e = execute(
         &op,
-        ExecuteOpts { verify_hash: false, dry_run: false, use_os_trash: true },
+        ExecuteOpts {
+            verify_hash: false,
+            dry_run: false,
+            use_os_trash: true,
+        },
     )?;
     // Either the OS trash accepted it (destination is None, source gone) or
     // the executor fell back to the local trash (destination set); both are
@@ -156,9 +239,21 @@ fn journal_records_and_undoes_move() -> anyhow::Result<()> {
     let dst = dir.path().join("dest").join("a.txt");
     fs::write(&src, b"hello world")?;
     let journal = Journal::open_in_memory()?;
-    let op = planned(OpKind::Move, Some(src.clone()), Some(dst.clone()), CollisionPolicy::Rename);
+    let op = planned(
+        OpKind::Move,
+        Some(src.clone()),
+        Some(dst.clone()),
+        CollisionPolicy::Rename,
+    );
     journal.record_start(&op)?;
-    let e = execute(&op, ExecuteOpts { verify_hash: true, dry_run: false, use_os_trash: false })?;
+    let e = execute(
+        &op,
+        ExecuteOpts {
+            verify_hash: true,
+            dry_run: false,
+            use_os_trash: false,
+        },
+    )?;
     journal.record_success(&e)?;
 
     let entry = journal.get(&op.id)?.unwrap();
@@ -181,9 +276,21 @@ fn undo_refuses_when_size_differs() -> anyhow::Result<()> {
     let dst = dir.path().join("dest").join("a.txt");
     fs::write(&src, b"one")?;
     let journal = Journal::open_in_memory()?;
-    let op = planned(OpKind::Move, Some(src.clone()), Some(dst.clone()), CollisionPolicy::Rename);
+    let op = planned(
+        OpKind::Move,
+        Some(src.clone()),
+        Some(dst.clone()),
+        CollisionPolicy::Rename,
+    );
     journal.record_start(&op)?;
-    let e = execute(&op, ExecuteOpts { verify_hash: true, dry_run: false, use_os_trash: false })?;
+    let e = execute(
+        &op,
+        ExecuteOpts {
+            verify_hash: true,
+            dry_run: false,
+            use_os_trash: false,
+        },
+    )?;
     journal.record_success(&e)?;
     // Tamper with the destination: user edited it.
     fs::write(&dst, b"much larger content now")?;
@@ -201,9 +308,21 @@ fn undo_refuses_when_original_path_occupied() -> anyhow::Result<()> {
     let dst = dir.path().join("dest").join("a.txt");
     fs::write(&src, b"one")?;
     let journal = Journal::open_in_memory()?;
-    let op = planned(OpKind::Move, Some(src.clone()), Some(dst.clone()), CollisionPolicy::Rename);
+    let op = planned(
+        OpKind::Move,
+        Some(src.clone()),
+        Some(dst.clone()),
+        CollisionPolicy::Rename,
+    );
     journal.record_start(&op)?;
-    let e = execute(&op, ExecuteOpts { verify_hash: true, dry_run: false, use_os_trash: false })?;
+    let e = execute(
+        &op,
+        ExecuteOpts {
+            verify_hash: true,
+            dry_run: false,
+            use_os_trash: false,
+        },
+    )?;
     journal.record_success(&e)?;
     // A new file appears at the original path — undo would overwrite it.
     fs::write(&src, b"user re-created")?;

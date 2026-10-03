@@ -45,5 +45,7 @@ pub enum Error {
 }
 
 impl From<time::error::Format> for Error {
-    fn from(e: time::error::Format) -> Self { Self::Time(e.to_string()) }
+    fn from(e: time::error::Format) -> Self {
+        Self::Time(e.to_string())
+    }
 }

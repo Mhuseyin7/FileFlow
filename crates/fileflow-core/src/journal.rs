@@ -158,9 +158,7 @@ impl Journal {
                from journal order by started_at desc limit ?1"#,
         )?;
         let rows = stmt
-            .query_map(params![limit as i64], |row| {
-                Ok(row_to_entry(row))
-            })?
+            .query_map(params![limit as i64], |row| Ok(row_to_entry(row)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter().collect::<Result<Vec<_>>>()
     }
@@ -215,7 +213,10 @@ impl Journal {
 fn perform_undo(e: &JournalEntry) -> Result<()> {
     match e.kind {
         OpKind::Move | OpKind::Rename | OpKind::Trash => {
-            let src = e.source.as_ref().ok_or_else(|| Error::Other("no source".into()))?;
+            let src = e
+                .source
+                .as_ref()
+                .ok_or_else(|| Error::Other("no source".into()))?;
             let dst = e
                 .destination
                 .as_ref()
@@ -283,7 +284,9 @@ fn verify_identity(p: &std::path::Path, e: &JournalEntry) -> Result<()> {
         loop {
             use std::io::Read;
             let n = f.read(&mut buf)?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             h.update(&buf[..n]);
         }
         let got = hex(&h.finalize().into());
@@ -317,8 +320,8 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> Result<JournalEntry> {
     let source_hash_hex: Option<String> = row.get(11)?;
     let undo_s: String = row.get(12)?;
 
-    let started_at = OffsetDateTime::from_unix_timestamp(started_ts)
-        .map_err(|e| Error::Time(e.to_string()))?;
+    let started_at =
+        OffsetDateTime::from_unix_timestamp(started_ts).map_err(|e| Error::Time(e.to_string()))?;
     let finished_at = finished_ts
         .map(|t| OffsetDateTime::from_unix_timestamp(t).map_err(|e| Error::Time(e.to_string())))
         .transpose()?;

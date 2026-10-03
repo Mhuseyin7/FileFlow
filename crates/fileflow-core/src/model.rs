@@ -98,9 +98,7 @@ fn split_stem_ext(name: &str) -> (String, String) {
 }
 
 fn systime_to_odt(t: std::time::SystemTime) -> Result<OffsetDateTime, time::error::ComponentRange> {
-    let d = t
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     OffsetDateTime::from_unix_timestamp_nanos(d.as_nanos() as i128)
 }
 
@@ -136,7 +134,9 @@ pub struct Rule {
 }
 
 impl Rule {
-    pub fn new_id() -> String { Uuid::new_v4().to_string() }
+    pub fn new_id() -> String {
+        Uuid::new_v4().to_string()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -183,17 +183,38 @@ pub enum ConditionNode {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Condition {
     /// The file's parent directory equals or descends from this path.
-    SourceFolder { path: PathBuf, recursive: bool },
+    SourceFolder {
+        path: PathBuf,
+        recursive: bool,
+    },
     /// Case-insensitive filename substring.
-    FilenameContains { needle: String },
+    FilenameContains {
+        needle: String,
+    },
     /// Regex against the whole filename.
-    FilenameRegex { pattern: String },
-    Extension { any_of: Vec<String> },
-    Category { any_of: Vec<Category> },
-    MimeType { any_of: Vec<String> },
-    SizeBytes { op: NumOp, value: u64 },
-    AgeDays { op: NumOp, value: i64 },
-    Hidden { equals: bool },
+    FilenameRegex {
+        pattern: String,
+    },
+    Extension {
+        any_of: Vec<String>,
+    },
+    Category {
+        any_of: Vec<Category>,
+    },
+    MimeType {
+        any_of: Vec<String>,
+    },
+    SizeBytes {
+        op: NumOp,
+        value: u64,
+    },
+    AgeDays {
+        op: NumOp,
+        value: i64,
+    },
+    Hidden {
+        equals: bool,
+    },
     /// Modified date within [from, to] inclusive (either bound may be null).
     ModifiedBetween {
         #[serde(with = "time::serde::rfc3339::option")]
@@ -203,9 +224,15 @@ pub enum Condition {
     },
     /// Photo EXIF capture date. Requires `metadata` feature; without it, the
     /// condition never matches.
-    PhotoCaptureAgeDays { op: NumOp, value: i64 },
+    PhotoCaptureAgeDays {
+        op: NumOp,
+        value: i64,
+    },
     /// PDF page count.
-    PdfPageCount { op: NumOp, value: u32 },
+    PdfPageCount {
+        op: NumOp,
+        value: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -237,11 +264,23 @@ impl NumOp {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Action {
-    Move { dest_dir: PathBuf, rename: Option<String> },
-    Copy { dest_dir: PathBuf, rename: Option<String> },
-    Rename { pattern: String },
-    CreateFolder { path: PathBuf },
-    Tag { tags: Vec<String> },
+    Move {
+        dest_dir: PathBuf,
+        rename: Option<String>,
+    },
+    Copy {
+        dest_dir: PathBuf,
+        rename: Option<String>,
+    },
+    Rename {
+        pattern: String,
+    },
+    CreateFolder {
+        path: PathBuf,
+    },
+    Tag {
+        tags: Vec<String>,
+    },
     Review,
     Trash,
 }
@@ -282,5 +321,7 @@ pub struct PlannedOp {
 }
 
 impl PlannedOp {
-    pub fn new_id() -> String { Uuid::new_v4().to_string() }
+    pub fn new_id() -> String {
+        Uuid::new_v4().to_string()
+    }
 }
