@@ -21,7 +21,7 @@ fn run_tauri() {
     use fileflow_app_lib::state::AppState;
 
     let data_dir = dirs_local_data_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
+        .unwrap_or_else(std::env::temp_dir)
         .join("FileFlow");
     let state = AppState::new(data_dir).expect("init AppState");
 
