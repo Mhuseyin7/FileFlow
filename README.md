@@ -1,5 +1,10 @@
 # FileFlow
 
+[![CI](https://github.com/Mhuseyin7/FileFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Mhuseyin7/FileFlow/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
+[![Tauri](https://img.shields.io/badge/Tauri-v2-24C8DB.svg)](https://tauri.app/)
+
 **Explainable file organization for your desktop.**
 Açık kaynak kodlu bir desktop utility — geliştiren: **[muhammedkoca.com.tr](https://muhammedkoca.com.tr)**.
 
