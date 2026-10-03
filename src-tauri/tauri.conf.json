@@ -40,7 +40,7 @@
     "windows": {
       "webviewInstallMode": { "type": "embedBootstrapper" },
       "nsis": {
-        "installMode": "perUser",
+        "installMode": "currentUser",
         "displayLanguageSelector": true,
         "installerIcon": "icons/icon.ico",
         "languages": ["English", "Turkish"]
