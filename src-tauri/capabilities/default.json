@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability grants for the main FileFlow window. Core window + dialog permissions plus every custom FileFlow command. No arbitrary FS access is granted — every filesystem operation runs through the Rust safety validator.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default"
+  ]
+}
