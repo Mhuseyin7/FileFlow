@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (security & data safety)
+- Sandbox is fail-closed (an empty allow-list denies everything), resolves
+  paths and symlinks before comparing, and rejects sources outside the
+  granted folders; drive roots and system folders cannot be granted.
+- Moves never overwrite (atomic no-clobber); `Replace` moves the existing
+  file to FileFlow trash; failed or cancelled copies leave no partial file;
+  cross-volume moves always verify a checksum before deleting the source.
+- Undo checks size, modification time and SHA-256 and never overwrites;
+  interrupted operations are reconciled at start-up (`Journal::recover`).
+- Rules that would match every file, or with invalid paths/templates, are
+  rejected on save. Rename templates no longer corrupt non-ASCII text.
+- The command layer re-validates every operation before running it.
+
+### Added
+- Background engine: real-time and scheduled rules now actually run, with
+  guards against feeding FileFlow's own output back into the rules.
+- Persistent rules, granted folders, review queue and tags; versioned
+  SQLite schema with in-place migration from v0.1.
+- Review queue page, native folder picker, per-rule preview.
+
 ### Added
 - **Real-time watcher** (`fileflow_core::watcher`) wrapping `notify` v6 with
   a coalescing debouncer and stability gate. Partial-download suffixes and
