@@ -18,6 +18,20 @@ pub enum Category {
 }
 
 impl Category {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::Documents => "documents",
+            Category::Images => "images",
+            Category::Video => "video",
+            Category::Audio => "audio",
+            Category::Archives => "archives",
+            Category::Installers => "installers",
+            Category::Code => "code",
+            Category::Data => "data",
+            Category::Other => "other",
+        }
+    }
+
     pub fn from_extension(ext: &str) -> Self {
         // Extension is expected to be lowercase, without a leading dot.
         match ext {
