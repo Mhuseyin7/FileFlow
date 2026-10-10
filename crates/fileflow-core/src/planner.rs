@@ -2,45 +2,108 @@
 //! touches the filesystem; the safety validator and executor come after.
 
 use crate::error::Result;
-use crate::model::{Action, ConditionNode, FileMeta, OpKind, PlannedOp, Rule, RuleContinuation};
+use crate::model::{
+    Action, Condition, ConditionNode, FileMeta, OpKind, PlannedOp, Rule, RuleContinuation, Trigger,
+};
+use crate::paths;
 use crate::rename;
-use crate::rule::evaluate;
+use crate::rule::evaluate_fast;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 
-/// Plan every op that a batch of files would trigger against an ordered list
-/// of rules. Rules must already be sorted by priority.
-pub fn plan(rules: &[Rule], files: &[FileMeta], now: OffsetDateTime) -> Vec<PlannedOp> {
-    let mut ops = Vec::new();
+/// Something that stopped a matched rule from producing an operation. These
+/// are reported, never swallowed.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlanIssue {
+    pub path: PathBuf,
+    pub rule_name: String,
+    pub message: String,
+}
+
+#[derive(Debug, Default)]
+pub struct Plan {
+    pub ops: Vec<PlannedOp>,
+    pub issues: Vec<PlanIssue>,
+}
+
+/// Rules that should run for `trigger`: enabled and matching the trigger.
+pub fn active_rules(rules: &[Rule], trigger: Trigger) -> Vec<Rule> {
+    rules
+        .iter()
+        .filter(|r| r.enabled && r.trigger == trigger)
+        .cloned()
+        .collect()
+}
+
+/// Plans every op that a batch of files would trigger. Rules are evaluated in
+/// priority order (lower first); the `enabled` flag is the caller's concern,
+/// so a disabled rule can be previewed before it is switched on.
+///
+/// `Continue` lets later rules see the same file, but only after actions that
+/// leave it where it is (copy, tag, create folder). Move, rename, trash and
+/// review end the chain: a later rule would otherwise be handed a path that
+/// no longer exists.
+pub fn plan(rules: &[Rule], files: &[FileMeta], now: OffsetDateTime) -> Plan {
+    let mut ordered: Vec<&Rule> = rules.iter().collect();
+    ordered.sort_by_key(|r| r.priority);
+
+    let mut out = Plan::default();
+    let mut folders_seen: HashSet<PathBuf> = HashSet::new();
     for file in files {
-        for rule in rules {
-            if !rule.enabled {
-                continue;
-            }
+        for rule in &ordered {
             if !source_allowed(rule, file) {
                 continue;
             }
-            let outcome = evaluate(&rule.condition, file, now);
+            let outcome = evaluate_fast(&rule.condition, file, now);
             if !outcome.matched {
                 continue;
             }
-            match plan_one(rule, file, outcome.reasons, now) {
-                Ok(op) => ops.push(op),
-                Err(_e) => continue, // invalid rename template etc.; safety catches it too
+            let op = match plan_one(rule, file, outcome.reasons, now) {
+                Ok(op) => op,
+                Err(e) => {
+                    out.issues.push(PlanIssue {
+                        path: file.path.clone(),
+                        rule_name: rule.name.clone(),
+                        message: e.to_string(),
+                    });
+                    break;
+                }
+            };
+            // The file is already where the rule would put it (for example a
+            // watcher event for a file this rule moved a moment ago).
+            if op.destination.is_some()
+                && op.destination.as_deref() == op.source.as_deref()
+                && op.kind != OpKind::CreateFolder
+            {
+                break;
             }
-            if matches!(rule.then, RuleContinuation::StopAfterAction) {
+            let relocates = matches!(
+                op.kind,
+                OpKind::Move | OpKind::Rename | OpKind::Trash | OpKind::Review
+            );
+            let repeated_folder = op.kind == OpKind::CreateFolder
+                && !op
+                    .destination
+                    .clone()
+                    .is_some_and(|d| folders_seen.insert(d));
+            if !repeated_folder {
+                out.ops.push(op);
+            }
+            if relocates || rule.then == RuleContinuation::StopAfterAction {
                 break;
             }
         }
     }
-    ops
+    out
 }
 
 fn source_allowed(rule: &Rule, file: &FileMeta) -> bool {
-    if rule.sources.is_empty() {
-        return true;
-    }
-    rule.sources.iter().any(|s| file.parent.starts_with(s))
+    rule.sources.is_empty()
+        || rule
+            .sources
+            .iter()
+            .any(|s| paths::starts_with(&file.parent, s, paths::CASE_INSENSITIVE_FS))
 }
 
 fn plan_one(
@@ -50,25 +113,22 @@ fn plan_one(
     now: OffsetDateTime,
 ) -> Result<PlannedOp> {
     let (kind, dest) = match &rule.action {
-        Action::Move { dest_dir, rename } => {
-            let name = match rename {
-                Some(tmpl) => rename::render(tmpl, file, now)?,
-                None => file.name.clone(),
-            };
-            (OpKind::Move, Some(dest_dir.join(name)))
-        }
-        Action::Copy { dest_dir, rename } => {
-            let name = match rename {
-                Some(tmpl) => rename::render(tmpl, file, now)?,
-                None => file.name.clone(),
-            };
-            (OpKind::Copy, Some(dest_dir.join(name)))
-        }
+        Action::Move { dest_dir, rename } => (
+            OpKind::Move,
+            Some(place(dest_dir, rename.as_deref(), file, now)?),
+        ),
+        Action::Copy { dest_dir, rename } => (
+            OpKind::Copy,
+            Some(place(dest_dir, rename.as_deref(), file, now)?),
+        ),
         Action::Rename { pattern } => {
             let name = rename::render(pattern, file, now)?;
             (OpKind::Rename, Some(file.parent.join(name)))
         }
-        Action::CreateFolder { path } => (OpKind::CreateFolder, Some(path.clone())),
+        Action::CreateFolder { path } => (
+            OpKind::CreateFolder,
+            Some(rename::render_dir(path, file, now)?),
+        ),
         Action::Tag { .. } => (OpKind::Tag, None),
         Action::Review => (OpKind::Review, None),
         Action::Trash => (OpKind::Trash, None),
@@ -84,7 +144,25 @@ fn plan_one(
         collision: rule.on_conflict,
         reasons,
         warnings: Vec::new(),
+        tags: match &rule.action {
+            Action::Tag { tags } => tags.clone(),
+            _ => Vec::new(),
+        },
     })
+}
+
+fn place(
+    dest_dir: &Path,
+    rename: Option<&str>,
+    file: &FileMeta,
+    now: OffsetDateTime,
+) -> Result<PathBuf> {
+    let dir = rename::render_dir(dest_dir, file, now)?;
+    let name = match rename {
+        Some(tmpl) => rename::render(tmpl, file, now)?,
+        None => file.name.clone(),
+    };
+    Ok(dir.join(name))
 }
 
 /// Detects rules that would match overlapping file sets, so we can warn the
@@ -103,68 +181,53 @@ pub fn detect_overlaps(rules: &[Rule]) -> Vec<(String, String, String)> {
 }
 
 fn overlap_reason(a: &Rule, b: &Rule) -> Option<String> {
-    let a_ext = collect_extensions(&a.condition);
-    let b_ext = collect_extensions(&b.condition);
-    let a_src = collect_sources(&a.condition, &a.sources);
-    let b_src = collect_sources(&b.condition, &b.sources);
-    let src_overlap = paths_overlap(&a_src, &b_src);
-    let ext_overlap = match (&a_ext, &b_ext) {
+    let src_overlap = paths_overlap(
+        &collect_sources(&a.condition, &a.sources),
+        &collect_sources(&b.condition, &b.sources),
+    );
+    let ext_overlap = match (
+        collect_extensions(&a.condition),
+        collect_extensions(&b.condition),
+    ) {
         (Some(a), Some(b)) => a.iter().any(|x| b.contains(x)),
         _ => true, // no explicit ext constraint on one side ⇒ potentially any
     };
-    if src_overlap && ext_overlap {
-        Some("shared source folder and overlapping extensions".to_string())
-    } else {
-        None
-    }
+    (src_overlap && ext_overlap)
+        .then(|| "shared source folder and overlapping extensions".to_string())
 }
 
 fn collect_extensions(node: &ConditionNode) -> Option<Vec<String>> {
     let mut out = Vec::new();
-    walk(node, &mut |c| {
-        if let crate::model::Condition::Extension { any_of } = c {
-            for e in any_of {
-                out.push(e.trim_start_matches('.').to_lowercase());
-            }
+    node.visit(&mut |c| {
+        if let Condition::Extension { any_of } = c {
+            out.extend(
+                any_of
+                    .iter()
+                    .map(|e| e.trim_start_matches('.').to_lowercase()),
+            );
         }
     });
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn collect_sources(node: &ConditionNode, explicit: &[PathBuf]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = explicit.to_vec();
-    walk(node, &mut |c| {
-        if let crate::model::Condition::SourceFolder { path, .. } = c {
+    node.visit(&mut |c| {
+        if let Condition::SourceFolder { path, .. } = c {
             out.push(path.clone());
         }
     });
     out
 }
 
-fn walk(node: &ConditionNode, visit: &mut dyn FnMut(&crate::model::Condition)) {
-    match node {
-        ConditionNode::All { children } | ConditionNode::Any { children } => {
-            for c in children {
-                walk(c, visit);
-            }
-        }
-        ConditionNode::Leaf { condition } => visit(condition),
-    }
-}
-
 fn paths_overlap(a: &[PathBuf], b: &[PathBuf]) -> bool {
-    if a.is_empty() || b.is_empty() {
-        return true;
-    }
-    a.iter().any(|x| b.iter().any(|y| overlap(x, y)))
-}
-
-fn overlap(a: &Path, b: &Path) -> bool {
-    a.starts_with(b) || b.starts_with(a)
+    let ci = paths::CASE_INSENSITIVE_FS;
+    a.is_empty()
+        || b.is_empty()
+        || a.iter().any(|x| {
+            b.iter()
+                .any(|y| paths::starts_with(x, y, ci) || paths::starts_with(y, x, ci))
+        })
 }
 
 /// Aggregate metrics for the preview banner.
@@ -187,25 +250,4 @@ pub struct PreviewSummary {
     pub count: usize,
     pub total_bytes: u64,
     pub warnings: usize,
-}
-
-impl PreviewSummary {
-    pub fn human_bytes(&self) -> String {
-        human_bytes(self.total_bytes)
-    }
-}
-
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    let mut n = bytes as f64;
-    let mut i = 0;
-    while n >= 1024.0 && i < UNITS.len() - 1 {
-        n /= 1024.0;
-        i += 1;
-    }
-    if i == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{n:.1} {}", UNITS[i])
-    }
 }
