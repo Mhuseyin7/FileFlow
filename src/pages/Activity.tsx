@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, errorText, onEngineChange } from "../api";
 import type { JournalEntry } from "../types";
 import { humanBytes } from "../components/Bytes";
 import { useT } from "../i18n";
@@ -13,7 +13,12 @@ export function Activity() {
     setEntries(await api.journal(200));
   }
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+    let off = () => {};
+    onEngineChange(refresh).then((fn) => (off = fn));
+    return () => off();
+  }, []);
 
   async function onUndo(op_id: string) {
     setMessage(null);
@@ -21,7 +26,7 @@ export function Activity() {
       await api.undo(op_id);
       setMessage("Undone.");
     } catch (e) {
-      setMessage(`Undo blocked: ${String(e)}`);
+      setMessage(`Undo blocked: ${errorText(e)}`);
     }
     await refresh();
   }
@@ -95,7 +100,8 @@ function stateClass(state: JournalEntry["state"]): string {
   switch (state) {
     case "completed": return "pill-ok";
     case "failed": return "pill-danger";
-    case "undone": return "pill";
+    case "undone":
+    case "skipped": return "pill";
     default: return "pill-warn";
   }
 }
