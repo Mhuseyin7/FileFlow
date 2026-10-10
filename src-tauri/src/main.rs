@@ -22,19 +22,36 @@ fn main() {
 fn run_tauri() {
     use fileflow_app_lib::commands::tauri_bindings::*;
     use fileflow_app_lib::state::AppState;
+    use std::sync::Arc;
+    use tauri::{Emitter, Manager};
 
     let data_dir = dirs_local_data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("FileFlow");
-    let state = AppState::new(data_dir).expect("init AppState");
+    let state = Arc::new(AppState::new(data_dir).expect("init AppState"));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(state)
+        .manage(state.clone())
+        .setup(move |app| {
+            // Let the engine tell the UI when it changed something.
+            let handle = app.handle().clone();
+            *state.on_change.lock().unwrap() = Some(Arc::new(move || {
+                let _ = handle.emit("fileflow://changed", ());
+            }));
+            if let Err(e) = fileflow_app_lib::engine::start(&state) {
+                eprintln!("FileFlow: could not start background engine: {e}");
+            }
+            let _ = app.get_webview_window("main");
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_rules,
             save_rule,
             delete_rule,
+            recovered,
+            review_queue,
+            resolve_review,
             set_sandbox_roots,
             get_sandbox_roots,
             preview,
