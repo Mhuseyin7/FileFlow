@@ -1,146 +1,257 @@
-//! Safety validator. Runs between the planner and the executor. Anything that
-//! could:
+//! Safety validator. Runs between the planner and the executor, and again
+//! right before every execution. Anything that could
 //!
-//! * silently delete data,
-//! * cross a symlink out of the sandbox,
-//! * overwrite a newer file,
-//! * touch a monitored root that wasn't explicitly granted,
+//! * touch a folder the user never granted,
+//! * escape a granted folder through `..`, a symlink or a junction,
+//! * write into an operating-system directory,
+//! * target an invalid file name,
 //!
-//! must be caught here. Errors block execution; warnings attach to the
+//! is rejected here. Errors block execution; warnings attach to the
 //! `PlannedOp` and surface in the preview.
+//!
+//! The sandbox is **fail-closed**: with no granted folders nothing is allowed.
 
 use crate::error::{Error, Result};
 use crate::model::{CollisionPolicy, OpKind, PlannedOp};
+use crate::paths;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Sandbox describes the roots the user has explicitly granted.
+/// The roots the user explicitly granted plus the roots FileFlow refuses to
+/// touch no matter what.
 #[derive(Debug, Clone, Default)]
 pub struct Sandbox {
-    pub allowed_roots: Vec<PathBuf>,
-    /// Roots we refuse to touch even if the user granted them (system dirs).
-    pub forbidden_roots: Vec<PathBuf>,
+    allowed: Vec<PathBuf>,
+    forbidden: Vec<PathBuf>,
 }
 
 impl Sandbox {
-    pub fn contains(&self, p: &Path) -> bool {
-        let canon = canonical_or_self(p);
-        self.allowed_roots.iter().any(|r| starts_with(&canon, r))
+    /// Roots are resolved once here. Allowed roots that cannot be resolved
+    /// (missing, unreadable) are dropped, which only ever makes the sandbox
+    /// smaller.
+    pub fn new(
+        allowed_roots: impl IntoIterator<Item = PathBuf>,
+        forbidden_roots: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
+        Self {
+            allowed: allowed_roots
+                .into_iter()
+                .filter_map(|p| paths::resolve(&p).ok())
+                .collect(),
+            forbidden: forbidden_roots
+                .into_iter()
+                .map(|p| paths::resolve(&p).unwrap_or(p))
+                .collect(),
+        }
     }
-    pub fn is_forbidden(&self, p: &Path) -> bool {
-        let canon = canonical_or_self(p);
-        self.forbidden_roots.iter().any(|r| starts_with(&canon, r))
+
+    pub fn allowed_roots(&self) -> &[PathBuf] {
+        &self.allowed
+    }
+
+    /// Resolves `path` (see [`paths::resolve_entry`]) and checks it against
+    /// both lists. Returns the resolved path on success.
+    pub fn check(&self, path: &Path, what: &str) -> Result<PathBuf> {
+        let resolved = paths::resolve_entry(path)?;
+        if self.is_forbidden_resolved(&resolved) {
+            return Err(Error::Safety(format!(
+                "{what} is in a protected system location: {}",
+                path.display()
+            )));
+        }
+        if !self.contains_resolved(&resolved) {
+            return Err(Error::Safety(format!(
+                "{what} is outside the folders you granted: {}",
+                path.display()
+            )));
+        }
+        Ok(resolved)
+    }
+
+    pub fn contains(&self, path: &Path) -> bool {
+        paths::resolve_entry(path).is_ok_and(|r| self.contains_resolved(&r))
+    }
+
+    fn contains_resolved(&self, resolved: &Path) -> bool {
+        self.allowed
+            .iter()
+            .any(|root| paths::starts_with(resolved, root, false))
+    }
+
+    fn is_forbidden_resolved(&self, resolved: &Path) -> bool {
+        self.forbidden
+            .iter()
+            .any(|root| paths::starts_with(resolved, root, paths::CASE_INSENSITIVE_FS))
     }
 }
 
-fn canonical_or_self(p: &Path) -> PathBuf {
-    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+/// Operating-system locations that are never valid sources or destinations,
+/// plus whatever the caller adds (for example FileFlow's own data directory).
+pub fn default_forbidden_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    #[cfg(windows)]
+    for var in [
+        "SystemRoot",
+        "windir",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "ProgramData",
+    ] {
+        if let Some(v) = std::env::var_os(var) {
+            roots.push(PathBuf::from(v));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    roots.extend(
+        [
+            "/System",
+            "/Library",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/dev",
+            "/cores",
+            "/private/etc",
+            "/private/var/db",
+        ]
+        .map(PathBuf::from),
+    );
+    #[cfg(all(unix, not(target_os = "macos")))]
+    roots.extend(
+        [
+            "/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/proc", "/run", "/sbin",
+            "/sys", "/usr", "/var/lib", "/var/log",
+        ]
+        .map(PathBuf::from),
+    );
+    roots.extend(extra.iter().cloned());
+    roots
 }
 
-fn starts_with(child: &Path, parent: &Path) -> bool {
-    // Compare canonicalized parent when possible.
-    let parent_c = canonical_or_self(parent);
-    child.starts_with(&parent_c)
+/// Vets a folder the user wants to grant. Returns the canonical path to
+/// store. Rejects relative paths, missing folders, files, filesystem roots,
+/// protected locations and any folder that contains a protected location
+/// (granting `C:\` would otherwise sneak `C:\Windows` in).
+pub fn vet_root(candidate: &Path, forbidden: &[PathBuf]) -> Result<PathBuf> {
+    let resolved = paths::resolve(&paths::expand_tilde(candidate))?;
+    let md = std::fs::metadata(&resolved)?;
+    if !md.is_dir() {
+        return Err(Error::Safety(format!(
+            "not a folder: {}",
+            resolved.display()
+        )));
+    }
+    if paths::is_fs_root(&resolved) {
+        return Err(Error::Safety(
+            "a whole drive or filesystem root cannot be granted".into(),
+        ));
+    }
+    for f in forbidden {
+        let f = paths::resolve(f).unwrap_or_else(|_| f.clone());
+        let ci = paths::CASE_INSENSITIVE_FS;
+        if paths::starts_with(&resolved, &f, ci) || paths::starts_with(&f, &resolved, ci) {
+            return Err(Error::Safety(format!(
+                "{} overlaps a protected system location",
+                resolved.display()
+            )));
+        }
+    }
+    Ok(resolved)
 }
 
-/// Validate a batch of ops; annotates warnings in place and returns the
-/// filtered list (blocking errors are removed) alongside per-op errors.
-pub fn validate(
-    sandbox: &Sandbox,
-    mut ops: Vec<PlannedOp>,
-) -> (Vec<PlannedOp>, Vec<(String, Error)>) {
+/// Validates a batch. Blocking problems come back as `(op_id, error)`;
+/// everything else is returned with warnings attached.
+pub fn validate(sandbox: &Sandbox, ops: Vec<PlannedOp>) -> (Vec<PlannedOp>, Vec<(String, Error)>) {
     let mut errors = Vec::new();
     let mut ok = Vec::with_capacity(ops.len());
-    for mut op in ops.drain(..) {
-        match validate_one(sandbox, &mut op) {
+    for mut op in ops {
+        match validate_op(sandbox, &mut op) {
             Ok(()) => ok.push(op),
             Err(e) => errors.push((op.id.clone(), e)),
         }
     }
-    ok.iter_mut()
-        .for_each(|op| dedupe_warnings(&mut op.warnings));
+    flag_duplicate_destinations(&mut ok);
     (ok, errors)
 }
 
-fn dedupe_warnings(w: &mut Vec<String>) {
-    w.sort();
-    w.dedup();
+fn flag_duplicate_destinations(ops: &mut [PlannedOp]) {
+    let key = |p: &Path| {
+        let s = p.to_string_lossy().into_owned();
+        if paths::CASE_INSENSITIVE_FS {
+            s.to_lowercase()
+        } else {
+            s
+        }
+    };
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for op in ops.iter() {
+        if matches!(op.kind, OpKind::Move | OpKind::Copy | OpKind::Rename) {
+            if let Some(d) = &op.destination {
+                *seen.entry(key(d)).or_default() += 1;
+            }
+        }
+    }
+    for op in ops.iter_mut() {
+        if let Some(d) = &op.destination {
+            if seen.get(&key(d)).is_some_and(|n| *n > 1) {
+                op.warnings
+                    .push("another file in this batch has the same destination".into());
+            }
+        }
+    }
 }
 
-fn validate_one(sandbox: &Sandbox, op: &mut PlannedOp) -> Result<()> {
-    if let Some(src) = &op.source {
-        if sandbox.is_forbidden(src) {
-            return Err(Error::Safety(format!(
-                "source in forbidden root: {}",
-                src.display()
+/// Validates one op. Also called by the runner immediately before executing,
+/// because the filesystem may have changed since the preview.
+pub fn validate_op(sandbox: &Sandbox, op: &mut PlannedOp) -> Result<()> {
+    let src = match &op.source {
+        Some(s) => Some(sandbox.check(s, "source")?),
+        None => None,
+    };
+    let dst = match &op.destination {
+        Some(d) => Some(sandbox.check(d, "destination")?),
+        None => None,
+    };
+
+    if let Some(dst) = &dst {
+        let name = dst
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error::InvalidFilename("destination name is not valid UTF-8".into()))?;
+        if crate::rename::sanitize_filename(name)? != name {
+            return Err(Error::InvalidFilename(format!(
+                "'{name}' contains characters that are not allowed in file names"
             )));
         }
-        // Source doesn't strictly have to be inside the sandbox — the user may
-        // move a file into a sandbox — but if it isn't, that's worth warning
-        // about, since watchers only fire inside sandbox roots.
-        if !sandbox.allowed_roots.is_empty() && !sandbox.contains(src) {
-            op.warnings
-                .push(format!("source outside sandbox: {}", src.display()));
+        if src.as_ref() == Some(dst) {
+            return Err(Error::Safety("source and destination are the same".into()));
         }
-    }
-    if let Some(dst) = &op.destination {
-        if sandbox.is_forbidden(dst) {
-            return Err(Error::Safety(format!(
-                "destination in forbidden root: {}",
-                dst.display()
-            )));
-        }
-        if !sandbox.allowed_roots.is_empty() && !sandbox.contains(dst) {
-            // For destinations we're stricter — never write outside sandbox.
-            return Err(Error::Safety(format!(
-                "destination outside allowed roots: {}",
-                dst.display()
-            )));
-        }
-        if let Some(name) = dst.file_name().and_then(|s| s.to_str()) {
-            crate::rename::sanitize_filename(name)?;
-        } else {
-            return Err(Error::InvalidFilename("no filename component".into()));
-        }
-        // Source == destination is a no-op we shouldn't record; block it so
-        // callers don't accidentally log a "success" that did nothing.
-        if let Some(src) = &op.source {
-            if canonical_or_self(src) == canonical_or_self(dst) {
-                return Err(Error::Safety("source and destination identical".into()));
-            }
-        }
-        // Overwrite is only allowed via explicit Replace policy.
-        if dst.exists()
+        if dst.symlink_metadata().is_ok()
             && matches!(op.kind, OpKind::Move | OpKind::Copy | OpKind::Rename)
-            && !matches!(
-                op.collision,
-                CollisionPolicy::Replace | CollisionPolicy::Rename | CollisionPolicy::Ask
-            )
         {
-            return Err(Error::Conflict(format!(
-                "destination exists: {}",
-                dst.display()
-            )));
-        }
-    }
-    // Symlink hop-out: if source is a symlink pointing outside the sandbox,
-    // refuse.
-    if let Some(src) = &op.source {
-        if let Ok(md) = std::fs::symlink_metadata(src) {
-            if md.file_type().is_symlink() {
-                if let Ok(target) = std::fs::read_link(src) {
-                    let resolved = if target.is_absolute() {
-                        target
-                    } else {
-                        src.parent().unwrap_or(Path::new("")).join(target)
-                    };
-                    if !sandbox.allowed_roots.is_empty() && !sandbox.contains(&resolved) {
-                        return Err(Error::Safety(format!(
-                            "symlink target escapes sandbox: {}",
-                            resolved.display()
-                        )));
+            op.warnings.push(
+                match op.collision {
+                    CollisionPolicy::Rename => "destination exists: the file will be renamed",
+                    CollisionPolicy::Skip => "destination exists: the file will be skipped",
+                    CollisionPolicy::Ask => "destination exists: the file goes to the review queue",
+                    CollisionPolicy::Replace => {
+                        "destination exists: the existing file moves to FileFlow trash"
                     }
                 }
-            }
+                .into(),
+            );
+        }
+    }
+
+    if let (Some(src), OpKind::Copy) = (&src, op.kind) {
+        if src
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(Error::Safety(
+                "refusing to copy through a symbolic link".into(),
+            ));
         }
     }
     Ok(())
