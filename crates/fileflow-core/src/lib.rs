@@ -22,12 +22,14 @@ pub mod fs_ops;
 pub mod journal;
 pub mod metadata;
 pub mod model;
+pub mod paths;
 pub mod planner;
 pub mod rename;
 pub mod rule;
 pub mod safety;
 pub mod scheduler;
 pub mod stability;
+pub mod store;
 pub mod watcher;
 
 pub use error::{Error, Result};
