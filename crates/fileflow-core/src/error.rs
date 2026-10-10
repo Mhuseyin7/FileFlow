@@ -5,7 +5,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("io: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
+
+    #[error("permission denied: {0}")]
+    Permission(String),
 
     #[error("db: {0}")]
     Db(#[from] rusqlite::Error),
@@ -25,11 +28,19 @@ pub enum Error {
     #[error("invalid filename: {0}")]
     InvalidFilename(String),
 
+    #[error("invalid rule: {0}")]
+    InvalidRule(String),
+
     #[error("not found: {0}")]
     NotFound(String),
 
-    #[error("conflict: {0}")]
-    Conflict(String),
+    /// The collision policy said `Skip` and the destination exists.
+    #[error("skipped: {0}")]
+    Skipped(String),
+
+    /// The collision policy said `Ask`; a human has to decide.
+    #[error("needs input: {0}")]
+    NeedsInput(String),
 
     #[error("integrity: {0}")]
     Integrity(String),
@@ -37,15 +48,16 @@ pub enum Error {
     #[error("cancelled")]
     Cancelled,
 
-    #[error("permission denied: {0}")]
-    Permission(String),
-
     #[error("other: {0}")]
     Other(String),
 }
 
-impl From<time::error::Format> for Error {
-    fn from(e: time::error::Format) -> Self {
-        Self::Time(e.to_string())
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            Error::Permission(e.to_string())
+        } else {
+            Error::Io(e)
+        }
     }
 }
