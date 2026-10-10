@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api, errorText } from "../api";
 import { useT } from "../i18n";
 import type { Rule } from "../types";
 
@@ -137,8 +137,12 @@ export function Templates() {
   const [message, setMessage] = useState<string | null>(null);
 
   async function install(tpl: Rule) {
-    await api.saveRule({ ...tpl, id: "" });
-    setMessage(`"${tpl.name}" — ok.`);
+    try {
+      await api.saveRule({ ...tpl, id: "" });
+      setMessage(`"${tpl.name}" — added (switched off until you enable it).`);
+    } catch (e) {
+      setMessage(`"${tpl.name}" — not added: ${errorText(e)}`);
+    }
   }
 
   return (
