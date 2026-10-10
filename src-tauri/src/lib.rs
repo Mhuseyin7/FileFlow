@@ -6,4 +6,5 @@
 //! serializes to/from serde_json.
 
 pub mod commands;
+pub mod engine;
 pub mod state;
