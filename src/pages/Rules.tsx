@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
-import type { PreviewResult, Rule } from "../types";
+import { api, errorText, onEngineChange } from "../api";
+import type {
+  Category,
+  Condition,
+  ConditionNode,
+  NumOp,
+  PreviewResult,
+  Rule,
+} from "../types";
 import { humanBytes } from "../components/Bytes";
 import { useT } from "../i18n";
 
@@ -24,6 +31,9 @@ export function Rules() {
 
   useEffect(() => {
     refresh();
+    let off = () => {};
+    onEngineChange(refresh).then((fn) => (off = fn));
+    return () => off();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -47,23 +57,32 @@ export function Rules() {
       sources: [],
       trigger: "real_time",
     };
-    const saved = await api.saveRule(draft);
-    await refresh();
-    setSelected(saved);
+    // Not stored until it passes validation (Save).
+    setSelected(draft);
+    setPreview(null);
+    setMessage("Fill in the destination folder, then press Save.");
   }
 
   async function onSave(r: Rule) {
-    const saved = await api.saveRule(r);
-    setSelected(saved);
-    await refresh();
-    setMessage("Saved.");
+    try {
+      const saved = await api.saveRule(r);
+      setSelected(saved);
+      await refresh();
+      setMessage("Saved.");
+    } catch (e) {
+      setMessage(`Not saved: ${errorText(e)}`);
+    }
   }
 
   async function onDelete(id: string) {
-    await api.deleteRule(id);
-    setSelected(null);
-    setPreview(null);
-    await refresh();
+    try {
+      if (id) await api.deleteRule(id);
+      setSelected(null);
+      setPreview(null);
+      await refresh();
+    } catch (e) {
+      setMessage(`Delete failed: ${errorText(e)}`);
+    }
   }
 
   async function onPreview() {
@@ -72,21 +91,18 @@ export function Rules() {
     setPreview(null);
     setMessage(null);
     try {
-      const root = firstSource(selected) ?? "~/Downloads";
-      const res = await api.preview(root);
-      // Filter to just this rule for a focused preview.
-      const filtered: PreviewResult = {
-        ...res,
-        ops: res.ops.filter((op) => op.rule_id === selected.id),
-      };
-      filtered.summary = {
-        count: filtered.ops.length,
-        total_bytes: filtered.ops.reduce((s, o) => s + o.size, 0),
-        warnings: filtered.ops.filter((o) => o.warnings.length > 0).length,
-      };
-      setPreview(filtered);
+      if (!selected.id) {
+        setMessage("Save the rule first, then preview it.");
+        return;
+      }
+      const root = firstSource(selected) ?? (await api.getSandboxRoots())[0];
+      if (!root) {
+        setMessage("Grant access to a folder first (Folders page).");
+        return;
+      }
+      setPreview(await api.preview(root, selected.id));
     } catch (e) {
-      setMessage(`Preview failed: ${String(e)}`);
+      setMessage(`Preview failed: ${errorText(e)}`);
     } finally {
       setPreviewing(false);
     }
@@ -97,13 +113,21 @@ export function Rules() {
     setRunning(true);
     try {
       const outcomes = await api.run(preview.ops, dryRun);
-      const failed = outcomes.filter((o) => !o.ok);
+      const count = (s: string) => outcomes.filter((o) => o.status === s).length;
+      const parts = [
+        `${count("done")} ${dryRun ? "would apply" : "done"}`,
+        count("skipped") ? `${count("skipped")} skipped` : "",
+        count("needs_review") ? `${count("needs_review")} sent to review` : "",
+        count("failed") ? `${count("failed")} failed` : "",
+      ].filter(Boolean);
+      const firstError = outcomes.find((o) => o.status === "failed")?.error;
       setMessage(
-        dryRun
-          ? `Dry run: ${outcomes.length} ops would apply${failed.length ? `, ${failed.length} would fail.` : "."}`
-          : `Ran ${outcomes.length} ops${failed.length ? `; ${failed.length} failed.` : "."}`,
+        `${dryRun ? "Dry run" : "Run"}: ${parts.join(", ")}.` +
+          (firstError ? ` First error: ${firstError}` : ""),
       );
       if (!dryRun) setPreview(null);
+    } catch (e) {
+      setMessage(`Run failed: ${errorText(e)}`);
     } finally {
       setRunning(false);
     }
@@ -189,7 +213,7 @@ function firstSource(rule: Rule): string | null {
 }
 
 function findSourceInCondition(
-  node: import("../types").ConditionNode,
+  node: ConditionNode,
 ): string | null {
   if (node.kind === "leaf") {
     return node.condition.type === "source_folder" ? node.condition.path : null;
@@ -387,8 +411,8 @@ function ConditionRow({
   onChange,
   onDelete,
 }: {
-  leaf: import("../types").ConditionNode & { kind: "leaf" };
-  onChange: (n: import("../types").ConditionNode & { kind: "leaf" }) => void;
+  leaf: ConditionNode & { kind: "leaf" };
+  onChange: (n: ConditionNode & { kind: "leaf" }) => void;
   onDelete: () => void;
 }) {
   const c = leaf.condition;
@@ -485,7 +509,7 @@ function ConditionRow({
                   any_of: e.target.value
                     .split(",")
                     .map((s) => s.trim())
-                    .filter(Boolean) as import("../types").Category[],
+                    .filter(Boolean) as Category[],
                 },
               })
             }
@@ -500,7 +524,7 @@ function ConditionRow({
               onChange={(e) =>
                 onChange({
                   kind: "leaf",
-                  condition: { ...c, op: e.target.value as import("../types").NumOp },
+                  condition: { ...c, op: e.target.value as NumOp },
                 })
               }
             >
@@ -665,6 +689,18 @@ function PreviewPanel({
           </button>
         </div>
       </div>
+      {preview.issues.length > 0 && (
+        <div className="mb-3 rounded-md border border-warn bg-warn-soft p-3 text-xs text-warn">
+          {preview.issues.length} file(s) matched but could not be planned:
+          <ul className="mt-1 list-disc pl-4">
+            {preview.issues.slice(0, 5).map((i, n) => (
+              <li key={n}>
+                {i.path}: {i.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {preview.errors.length > 0 && (
         <div className="mb-3 rounded-md border border-danger bg-danger-soft p-3 text-xs text-danger">
           {preview.errors.length} op(s) blocked by safety validator:
@@ -697,19 +733,19 @@ function PreviewPanel({
 }
 
 function flattenLeaves(
-  node: import("../types").ConditionNode,
-): (import("../types").ConditionNode & { kind: "leaf" })[] {
+  node: ConditionNode,
+): (ConditionNode & { kind: "leaf" })[] {
   if (node.kind === "leaf") return [node];
   return node.children.flatMap(flattenLeaves);
 }
 
 function buildAll(
-  leaves: (import("../types").ConditionNode & { kind: "leaf" })[],
-): import("../types").ConditionNode {
+  leaves: (ConditionNode & { kind: "leaf" })[],
+): ConditionNode {
   return { kind: "all", children: leaves };
 }
 
-function defaultForType(t: import("../types").Condition["type"]): import("../types").Condition {
+function defaultForType(t: Condition["type"]): Condition {
   switch (t) {
     case "extension": return { type: "extension", any_of: ["pdf"] };
     case "filename_contains": return { type: "filename_contains", needle: "" };
