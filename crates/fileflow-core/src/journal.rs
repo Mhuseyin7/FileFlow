@@ -1,30 +1,94 @@
 //! Action journal + undo. Every operation carries a state machine:
 //!
-//! `Planned -> Executing -> Completed | Failed`
+//! `Executing -> Completed | Failed | Skipped`
 //! `Completed -> Undoing -> Undone`
 //!
-//! The journal never stores file contents. It stores enough metadata (source
-//! path, destination path, kind, size, optional pre-hash) to verify identity
-//! at undo time. If the world has changed under our feet (destination newer,
-//! source now occupied, hash differs), undo aborts rather than clobbering.
+//! The entry is written *before* the file is touched, so a crash always
+//! leaves a trace; [`Journal::recover`] reconciles those traces with what is
+//! actually on disk at the next start and never repeats an operation.
+//!
+//! The journal never stores file contents. It stores enough metadata
+//! (paths, size, modification time, optional SHA-256) to verify identity at
+//! undo time. If the world has changed under our feet — the file was edited,
+//! the original location is occupied — undo refuses rather than clobbering.
 
+use crate::db::Db;
 use crate::error::{Error, Result};
-use crate::fs_ops::{self, ExecuteOpts, Executed};
-use crate::model::{CollisionPolicy, OpKind, PlannedOp};
-use rusqlite::{params, Connection};
+use crate::fs_ops::{self, hash_file, hex, modified_ns, rename_no_clobber, ExecuteOpts, Executed};
+use crate::model::{OpKind, PlannedOp};
+use rusqlite::{params, Row};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OpState {
-    Planned,
     Executing,
     Completed,
     Failed,
+    /// Nothing was done because the collision policy said to leave it.
+    Skipped,
     Undoing,
     Undone,
+}
+
+impl OpState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OpState::Executing => "executing",
+            OpState::Completed => "completed",
+            OpState::Failed => "failed",
+            OpState::Skipped => "skipped",
+            OpState::Undoing => "undoing",
+            OpState::Undone => "undone",
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self> {
+        Ok(match s {
+            "executing" => OpState::Executing,
+            "completed" => OpState::Completed,
+            "failed" => OpState::Failed,
+            "skipped" => OpState::Skipped,
+            "undoing" => OpState::Undoing,
+            "undone" => OpState::Undone,
+            _ => return Err(Error::Other(format!("unknown journal state '{s}'"))),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UndoStatus {
+    NotApplicable,
+    Available,
+    /// The last undo attempt was refused because the files no longer match.
+    Unsafe,
+    Done,
+}
+
+impl UndoStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            UndoStatus::NotApplicable => "not_applicable",
+            UndoStatus::Available => "available",
+            UndoStatus::Unsafe => "unsafe",
+            UndoStatus::Done => "done",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        match s {
+            "available" => UndoStatus::Available,
+            "unsafe" => UndoStatus::Unsafe,
+            "done" => UndoStatus::Done,
+            _ => UndoStatus::NotApplicable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,338 +106,455 @@ pub struct JournalEntry {
     #[serde(with = "time::serde::rfc3339::option")]
     pub finished_at: Option<OffsetDateTime>,
     pub error: Option<String>,
-    /// Hex-encoded SHA-256 of the source at execute time.
+    /// Hex-encoded SHA-256 of the file, when one was computed.
     pub source_hash_hex: Option<String>,
     pub undo_status: UndoStatus,
+    /// Modification time of the destination right after the operation.
+    pub dest_modified_ns: Option<i64>,
+    /// Where a destination displaced by `Replace` was put.
+    pub replaced: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum UndoStatus {
-    NotApplicable,
-    Available,
-    Unsafe,
-    Done,
+/// What recovery concluded about an operation that was interrupted.
+#[derive(Debug, Clone, Serialize)]
+pub struct Recovery {
+    pub op_id: String,
+    pub path: Option<PathBuf>,
+    pub outcome: RecoveryOutcome,
+    pub note: String,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryOutcome {
+    /// The interrupted operation had not changed anything.
+    NotStarted,
+    /// It had finished; only the bookkeeping was missing.
+    Completed,
+    /// The disk is in a state a human should look at. Nothing was deleted.
+    NeedsAttention,
+}
+
+const COLS: &str = "op_id, rule_id, rule_name, kind, source, destination, size, state, \
+                    started_at, finished_at, error, source_hash_hex, undo_status, \
+                    dest_modified_ns, replaced_path";
 
 pub struct Journal {
-    conn: Connection,
+    db: Arc<Db>,
 }
 
 impl Journal {
+    pub fn new(db: Arc<Db>) -> Self {
+        Self { db }
+    }
+
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
-        let s = Journal { conn };
-        s.init_schema()?;
-        Ok(s)
+        Ok(Self::new(Arc::new(Db::open_in_memory()?)))
     }
 
-    pub fn open(path: &std::path::Path) -> Result<Self> {
-        let conn = Connection::open(path)?;
-        let s = Journal { conn };
-        s.init_schema()?;
-        Ok(s)
-    }
-
-    fn init_schema(&self) -> Result<()> {
-        crate::db::migrate(&self.conn)
+    pub fn open(path: &Path) -> Result<Self> {
+        Ok(Self::new(Arc::new(Db::open(path)?)))
     }
 
     pub fn record_start(&self, op: &PlannedOp) -> Result<()> {
-        let now = OffsetDateTime::now_utc();
-        let source = op.source.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let destination = op
-            .destination
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned());
-        self.conn.execute(
+        self.db.lock().execute(
             r#"insert into journal(op_id, rule_id, rule_name, kind, source, destination,
-                size, state, started_at, undo_status)
+                                   size, state, started_at, undo_status)
                values(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'executing', ?8, 'not_applicable')
-               on conflict(op_id) do update set state='executing', started_at=?8"#,
+               on conflict(op_id) do update
+                 set state='executing', started_at=?8, finished_at=null, error=null"#,
             params![
                 op.id,
                 op.rule_id,
                 op.rule_name,
-                serde_json::to_string(&op.kind)?.trim_matches('"'),
-                source,
-                destination,
+                op.kind.as_str(),
+                path_text(op.source.as_deref()),
+                path_text(op.destination.as_deref()),
                 op.size as i64,
-                now.unix_timestamp(),
+                now_ts(),
             ],
         )?;
         Ok(())
     }
 
     pub fn record_success(&self, e: &Executed) -> Result<()> {
-        let now = OffsetDateTime::now_utc();
-        let source = e.source.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let destination = e
-            .destination
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned());
-        let hash_hex = e.source_hash.as_ref().map(hex);
-        let undo_status = match e.kind {
-            OpKind::Move | OpKind::Rename | OpKind::Copy | OpKind::Trash => "available",
-            _ => "not_applicable",
+        // OS-trash and bookkeeping operations have no destination to restore
+        // from, so promising an undo would be a lie.
+        let undoable = e.destination.is_some()
+            && matches!(
+                e.kind,
+                OpKind::Move | OpKind::Rename | OpKind::Copy | OpKind::Trash
+            );
+        let undo = if undoable {
+            UndoStatus::Available
+        } else {
+            UndoStatus::NotApplicable
         };
-        self.conn.execute(
+        self.db.lock().execute(
             r#"update journal
-                 set state='completed',
-                     finished_at=?2,
-                     source=coalesce(?3, source),
-                     destination=coalesce(?4, destination),
-                     size=?5,
-                     source_hash_hex=?6,
-                     undo_status=?7
+                 set state='completed', finished_at=?2,
+                     source=coalesce(?3, source), destination=coalesce(?4, destination),
+                     size=?5, source_hash_hex=?6, undo_status=?7,
+                     dest_modified_ns=?8, replaced_path=?9, error=null
                where op_id=?1"#,
             params![
                 e.op_id,
-                now.unix_timestamp(),
-                source,
-                destination,
+                now_ts(),
+                path_text(e.source.as_deref()),
+                path_text(e.destination.as_deref()),
                 e.bytes as i64,
-                hash_hex,
-                undo_status,
+                e.source_hash.as_ref().map(hex),
+                undo.as_str(),
+                e.dest_modified_ns,
+                path_text(e.replaced.as_deref()),
             ],
         )?;
         Ok(())
     }
 
     pub fn record_failure(&self, op_id: &str, err: &Error) -> Result<()> {
-        let now = OffsetDateTime::now_utc();
-        self.conn.execute(
-            r#"update journal
-                 set state='failed', finished_at=?2, error=?3, undo_status='not_applicable'
-               where op_id=?1"#,
-            params![op_id, now.unix_timestamp(), err.to_string()],
+        self.finish(op_id, OpState::Failed, &err.to_string())
+    }
+
+    pub fn record_skipped(&self, op_id: &str, reason: &str) -> Result<()> {
+        self.finish(op_id, OpState::Skipped, reason)
+    }
+
+    fn finish(&self, op_id: &str, state: OpState, note: &str) -> Result<()> {
+        self.db.lock().execute(
+            "update journal set state=?2, finished_at=?3, error=?4, undo_status='not_applicable'
+             where op_id=?1",
+            params![op_id, state.as_str(), now_ts(), note],
         )?;
         Ok(())
     }
 
     pub fn list_recent(&self, limit: usize) -> Result<Vec<JournalEntry>> {
-        let mut stmt = self.conn.prepare(
-            r#"select op_id, rule_id, rule_name, kind, source, destination, size,
-                      state, started_at, finished_at, error, source_hash_hex, undo_status
-               from journal order by started_at desc limit ?1"#,
-        )?;
-        let rows = stmt
-            .query_map(params![limit as i64], |row| Ok(row_to_entry(row)))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        rows.into_iter().collect::<Result<Vec<_>>>()
+        self.query(
+            "order by started_at desc, rowid desc limit ?1",
+            params![limit as i64],
+        )
     }
 
     pub fn get(&self, op_id: &str) -> Result<Option<JournalEntry>> {
-        let mut stmt = self.conn.prepare(
-            r#"select op_id, rule_id, rule_name, kind, source, destination, size,
-                      state, started_at, finished_at, error, source_hash_hex, undo_status
-               from journal where op_id=?1"#,
-        )?;
-        let mut rows = stmt.query(params![op_id])?;
-        if let Some(row) = rows.next()? {
-            return Ok(Some(row_to_entry(row)?));
-        }
-        Ok(None)
+        Ok(self
+            .query("where op_id = ?1", params![op_id])?
+            .into_iter()
+            .next())
     }
 
-    /// Undo a completed op if it's safe. Safety = the file that lives at
-    /// `destination` still looks like the one we moved (same size, and same
-    /// hash if we recorded one).
+    fn query(&self, tail: &str, p: impl rusqlite::Params) -> Result<Vec<JournalEntry>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(&format!("select {COLS} from journal {tail}"))?;
+        let rows = stmt.query_map(p, |row| Ok(row_to_entry(row)))?;
+        rows.map(|r| r?).collect()
+    }
+
+    /// Undo a completed op if it is safe. Safe means the file at the
+    /// destination still looks like the one FileFlow put there (size,
+    /// modification time and, when recorded, SHA-256) and the original
+    /// location is still free. A refused undo can be retried.
     pub fn undo(&self, op_id: &str) -> Result<()> {
         let entry = self
             .get(op_id)?
-            .ok_or_else(|| Error::NotFound(format!("op {op_id}")))?;
+            .ok_or_else(|| Error::NotFound(format!("operation {op_id}")))?;
         if entry.state != OpState::Completed {
-            return Err(Error::Safety(format!("op state is {:?}", entry.state)));
+            return Err(Error::Safety(format!(
+                "this operation is {}; only completed operations can be undone",
+                entry.state.as_str()
+            )));
         }
-        self.conn.execute(
-            "update journal set state='undoing' where op_id=?1",
-            params![op_id],
-        )?;
-        let result = perform_undo(&entry);
-        match result {
-            Ok(()) => {
-                self.conn.execute(
-                    "update journal set state='undone', undo_status='done' where op_id=?1",
-                    params![op_id],
-                )?;
-                Ok(())
-            }
+        if !matches!(
+            entry.undo_status,
+            UndoStatus::Available | UndoStatus::Unsafe
+        ) {
+            return Err(Error::Safety(
+                "undo is not available for this operation".into(),
+            ));
+        }
+        self.set_state(op_id, OpState::Undoing, UndoStatus::Available, None)?;
+        match perform_undo(&entry) {
+            Ok(()) => self.set_state(op_id, OpState::Undone, UndoStatus::Done, None),
             Err(e) => {
-                self.conn.execute(
-                    "update journal set state='completed', undo_status='unsafe', error=?2 where op_id=?1",
-                    params![op_id, e.to_string()],
+                self.set_state(
+                    op_id,
+                    OpState::Completed,
+                    UndoStatus::Unsafe,
+                    Some(&e.to_string()),
                 )?;
                 Err(e)
             }
         }
     }
+
+    fn set_state(
+        &self,
+        op_id: &str,
+        state: OpState,
+        undo: UndoStatus,
+        error: Option<&str>,
+    ) -> Result<()> {
+        self.db.lock().execute(
+            "update journal set state=?2, undo_status=?3, error=?4 where op_id=?1",
+            params![op_id, state.as_str(), undo.as_str(), error],
+        )?;
+        Ok(())
+    }
+
+    /// Reconciles operations that were interrupted (crash, power loss,
+    /// force-quit) with what is on disk. Nothing is repeated and nothing is
+    /// deleted: an interrupted operation is either recorded as not started,
+    /// recorded as completed, or flagged for a human.
+    pub fn recover(&self) -> Result<Vec<Recovery>> {
+        let stuck = self.query(
+            "where state in ('executing', 'undoing') order by started_at, rowid",
+            [],
+        )?;
+        let mut out = Vec::with_capacity(stuck.len());
+        for e in stuck {
+            out.push(match e.state {
+                OpState::Undoing => self.recover_undo(&e)?,
+                _ => self.recover_forward(&e)?,
+            });
+        }
+        Ok(out)
+    }
+
+    fn recover_forward(&self, e: &JournalEntry) -> Result<Recovery> {
+        let src = present(e.source.as_deref());
+        let dst = present(e.destination.as_deref());
+        let (outcome, note) = match (e.kind, src, dst) {
+            (OpKind::Move | OpKind::Rename, true, false) | (OpKind::Copy, true, false) => (
+                RecoveryOutcome::NotStarted,
+                "interrupted before anything changed; the file is still at its original location",
+            ),
+            (OpKind::Move | OpKind::Rename, false, true) => {
+                (RecoveryOutcome::Completed, "the move had finished")
+            }
+            (OpKind::Move | OpKind::Rename, true, true) => (
+                RecoveryOutcome::NeedsAttention,
+                "both the original and the destination exist; nothing was deleted, please check them",
+            ),
+            (OpKind::Copy, true, true) => {
+                let same = match (e.source.as_deref(), e.destination.as_deref()) {
+                    (Some(s), Some(d)) => hash_file(s).ok().zip(hash_file(d).ok()).is_some_and(|(a, b)| a == b),
+                    _ => false,
+                };
+                if same {
+                    (RecoveryOutcome::Completed, "the copy had finished")
+                } else {
+                    (
+                        RecoveryOutcome::NeedsAttention,
+                        "a partial copy may remain at the destination; the original is intact",
+                    )
+                }
+            }
+            (OpKind::Trash, true, _) => (
+                RecoveryOutcome::NotStarted,
+                "interrupted before the file was trashed",
+            ),
+            (OpKind::Trash, false, _) => {
+                (RecoveryOutcome::Completed, "the file had been trashed")
+            }
+            (OpKind::CreateFolder, _, true) => {
+                (RecoveryOutcome::Completed, "the folder exists")
+            }
+            (OpKind::CreateFolder, _, false) | (OpKind::Tag | OpKind::Review, _, _) => (
+                RecoveryOutcome::NotStarted,
+                "interrupted before it was recorded",
+            ),
+            _ => (
+                RecoveryOutcome::NeedsAttention,
+                "the file is missing from both locations",
+            ),
+        };
+
+        match outcome {
+            RecoveryOutcome::Completed => {
+                let dest = e.destination.clone();
+                self.record_success(&Executed {
+                    op_id: e.op_id.clone(),
+                    kind: e.kind,
+                    source: e.source.clone(),
+                    bytes: dest
+                        .as_deref()
+                        .and_then(|d| fs::metadata(d).ok())
+                        .map_or(e.size, |m| m.len()),
+                    dest_modified_ns: dest.as_deref().and_then(modified_ns),
+                    destination: dest,
+                    source_hash: None,
+                    replaced: None,
+                })?;
+            }
+            _ => self.finish(&e.op_id, OpState::Failed, &format!("interrupted: {note}"))?,
+        }
+        Ok(Recovery {
+            op_id: e.op_id.clone(),
+            path: e.source.clone().or_else(|| e.destination.clone()),
+            outcome,
+            note: note.into(),
+        })
+    }
+
+    fn recover_undo(&self, e: &JournalEntry) -> Result<Recovery> {
+        let src = present(e.source.as_deref());
+        let dst = present(e.destination.as_deref());
+        // For a copy the original always exists; only the copy tells us
+        // whether the undo got as far as trashing it.
+        let undone = match e.kind {
+            OpKind::Copy => !dst,
+            _ => src && !dst,
+        };
+        let not_undone = dst && (e.kind == OpKind::Copy || !src);
+        let (outcome, note) = if undone {
+            self.set_state(&e.op_id, OpState::Undone, UndoStatus::Done, None)?;
+            (RecoveryOutcome::Completed, "the undo had finished")
+        } else if not_undone {
+            self.set_state(&e.op_id, OpState::Completed, UndoStatus::Available, None)?;
+            (RecoveryOutcome::NotStarted, "the undo had not started")
+        } else {
+            self.set_state(
+                &e.op_id,
+                OpState::Completed,
+                UndoStatus::Unsafe,
+                Some("an undo was interrupted and the files are in an unexpected state"),
+            )?;
+            (
+                RecoveryOutcome::NeedsAttention,
+                "an undo was interrupted and the files are in an unexpected state",
+            )
+        };
+        Ok(Recovery {
+            op_id: e.op_id.clone(),
+            path: e.source.clone(),
+            outcome,
+            note: note.into(),
+        })
+    }
 }
 
 fn perform_undo(e: &JournalEntry) -> Result<()> {
+    let dst = e.destination.as_deref().ok_or_else(|| {
+        Error::Safety("this file went to the system trash; restore it from there".into())
+    })?;
+    if !present(Some(dst)) {
+        return Err(Error::Integrity(format!(
+            "the file is no longer at {}",
+            dst.display()
+        )));
+    }
+    verify_identity(dst, e)?;
+
     match e.kind {
         OpKind::Move | OpKind::Rename | OpKind::Trash => {
             let src = e
                 .source
-                .as_ref()
-                .ok_or_else(|| Error::Other("no source".into()))?;
-            let dst = e
-                .destination
-                .as_ref()
-                .ok_or_else(|| Error::Other("no destination".into()))?;
-            // The file currently lives at `dst`; move it back to `src`.
-            if !dst.exists() {
-                return Err(Error::Integrity("destination missing".into()));
-            }
-            if src.exists() {
-                return Err(Error::Integrity("original source path now occupied".into()));
-            }
-            verify_identity(dst, e)?;
-            if let Some(parent) = src.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::rename(dst, src).or_else(|_| {
-                // Cross-fs fallback
-                let planned = PlannedOp {
-                    id: format!("undo-{}", e.op_id),
-                    rule_id: e.rule_id.clone(),
-                    rule_name: e.rule_name.clone(),
-                    kind: OpKind::Move,
-                    source: Some(dst.clone()),
-                    destination: Some(src.clone()),
-                    size: e.size,
-                    collision: CollisionPolicy::Skip,
-                    reasons: vec![],
-                    warnings: vec![],
-                };
-                fs_ops::execute(&planned, ExecuteOpts::default()).map(|_| ())
-            })?;
-            Ok(())
+                .as_deref()
+                .ok_or_else(|| Error::Other("the journal has no original location".into()))?;
+            restore(dst, src)?;
         }
+        // The copy is verified to be the one FileFlow made, then set aside in
+        // the local trash rather than deleted.
         OpKind::Copy => {
-            // Undo copy = delete the copied file, but only after verifying it
-            // is byte-identical to the source we recorded. If either side has
-            // drifted, refuse.
-            let dst = e
-                .destination
-                .as_ref()
-                .ok_or_else(|| Error::Other("no destination".into()))?;
-            if !dst.exists() {
-                return Err(Error::Integrity("destination missing".into()));
-            }
-            verify_identity(dst, e)?;
-            std::fs::remove_file(dst)?;
-            Ok(())
+            fs_ops::move_into_local_trash(dst)?;
         }
         OpKind::CreateFolder | OpKind::Tag | OpKind::Review => {
-            Err(Error::Safety("undo not applicable for this op".into()))
+            return Err(Error::Safety(
+                "undo is not available for this operation".into(),
+            ))
         }
+    }
+
+    // A file displaced by `Replace` goes back where it was.
+    if let Some(displaced) = e.replaced.as_deref().filter(|p| present(Some(p))) {
+        rename_no_clobber(displaced, dst).map_err(|err| {
+            Error::Integrity(format!(
+                "the operation was undone, but the file it had replaced could not be put back from {}: {err}",
+                displaced.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// Moves `from` back to `to` without ever replacing something at `to`.
+fn restore(from: &Path, to: &Path) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match rename_no_clobber(from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(Error::Integrity(format!(
+            "something else is now at the original location {}; nothing was changed",
+            to.display()
+        ))),
+        Err(e) if fs_ops::is_cross_device(&e) => {
+            fs_ops::move_by_copy(from, to, &ExecuteOpts::default()).map(|_| ())
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
-fn verify_identity(p: &std::path::Path, e: &JournalEntry) -> Result<()> {
-    let md = std::fs::metadata(p)?;
+fn verify_identity(p: &Path, e: &JournalEntry) -> Result<()> {
+    let md = fs::metadata(p)?;
     if md.len() != e.size {
-        return Err(Error::Integrity("file size differs".into()));
+        return Err(Error::Integrity(
+            "the file size has changed since the move".into(),
+        ));
+    }
+    if let Some(expected) = e.dest_modified_ns {
+        if modified_ns(p) != Some(expected) {
+            return Err(Error::Integrity(
+                "the file was modified after FileFlow moved it".into(),
+            ));
+        }
     }
     if let Some(expected) = &e.source_hash_hex {
-        use sha2::{Digest, Sha256};
-        let mut f = std::fs::File::open(p)?;
-        let mut h = Sha256::new();
-        let mut buf = vec![0u8; 4 * 1024 * 1024];
-        loop {
-            use std::io::Read;
-            let n = f.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            h.update(&buf[..n]);
-        }
-        let got = hex(&h.finalize().into());
-        if &got != expected {
-            return Err(Error::Integrity("hash mismatch".into()));
+        if &hex(&hash_file(p)?) != expected {
+            return Err(Error::Integrity(
+                "the file content has changed since the move".into(),
+            ));
         }
     }
     Ok(())
 }
 
-fn hex(bytes: &[u8; 32]) -> String {
-    let mut s = String::with_capacity(64);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
+fn present(p: Option<&Path>) -> bool {
+    p.is_some_and(|p| p.symlink_metadata().is_ok())
 }
 
-fn row_to_entry(row: &rusqlite::Row<'_>) -> Result<JournalEntry> {
-    let op_id: String = row.get(0)?;
-    let rule_id: String = row.get(1)?;
-    let rule_name: String = row.get(2)?;
-    let kind_s: String = row.get(3)?;
-    let source: Option<String> = row.get(4)?;
-    let destination: Option<String> = row.get(5)?;
-    let size: i64 = row.get(6)?;
-    let state_s: String = row.get(7)?;
-    let started_ts: i64 = row.get(8)?;
-    let finished_ts: Option<i64> = row.get(9)?;
-    let error: Option<String> = row.get(10)?;
-    let source_hash_hex: Option<String> = row.get(11)?;
-    let undo_s: String = row.get(12)?;
+fn path_text(p: Option<&Path>) -> Option<String> {
+    p.map(|p| p.to_string_lossy().into_owned())
+}
 
-    let started_at =
-        OffsetDateTime::from_unix_timestamp(started_ts).map_err(|e| Error::Time(e.to_string()))?;
-    let finished_at = finished_ts
-        .map(|t| OffsetDateTime::from_unix_timestamp(t).map_err(|e| Error::Time(e.to_string())))
-        .transpose()?;
+fn now_ts() -> i64 {
+    OffsetDateTime::now_utc().unix_timestamp()
+}
 
+fn ts(secs: i64) -> Result<OffsetDateTime> {
+    OffsetDateTime::from_unix_timestamp(secs).map_err(|e| Error::Time(e.to_string()))
+}
+
+fn row_to_entry(row: &Row<'_>) -> Result<JournalEntry> {
+    let kind: String = row.get(3)?;
+    let state: String = row.get(7)?;
+    let undo: String = row.get(12)?;
     Ok(JournalEntry {
-        op_id,
-        rule_id,
-        rule_name,
-        kind: parse_kind(&kind_s)?,
-        source: source.map(PathBuf::from),
-        destination: destination.map(PathBuf::from),
-        size: size as u64,
-        state: parse_state(&state_s)?,
-        started_at,
-        finished_at,
-        error,
-        source_hash_hex,
-        undo_status: parse_undo(&undo_s)?,
-    })
-}
-
-fn parse_kind(s: &str) -> Result<OpKind> {
-    Ok(match s {
-        "move" => OpKind::Move,
-        "copy" => OpKind::Copy,
-        "rename" => OpKind::Rename,
-        "create_folder" => OpKind::CreateFolder,
-        "tag" => OpKind::Tag,
-        "review" => OpKind::Review,
-        "trash" => OpKind::Trash,
-        _ => return Err(Error::Other(format!("bad op kind {s}"))),
-    })
-}
-
-fn parse_state(s: &str) -> Result<OpState> {
-    Ok(match s {
-        "planned" => OpState::Planned,
-        "executing" => OpState::Executing,
-        "completed" => OpState::Completed,
-        "failed" => OpState::Failed,
-        "undoing" => OpState::Undoing,
-        "undone" => OpState::Undone,
-        _ => return Err(Error::Other(format!("bad state {s}"))),
-    })
-}
-
-fn parse_undo(s: &str) -> Result<UndoStatus> {
-    Ok(match s {
-        "not_applicable" => UndoStatus::NotApplicable,
-        "available" => UndoStatus::Available,
-        "unsafe" => UndoStatus::Unsafe,
-        "done" => UndoStatus::Done,
-        _ => UndoStatus::NotApplicable,
+        op_id: row.get(0)?,
+        rule_id: row.get(1)?,
+        rule_name: row.get(2)?,
+        kind: OpKind::parse(&kind)
+            .ok_or_else(|| Error::Other(format!("unknown journal operation '{kind}'")))?,
+        source: row.get::<_, Option<String>>(4)?.map(PathBuf::from),
+        destination: row.get::<_, Option<String>>(5)?.map(PathBuf::from),
+        size: row.get::<_, i64>(6)? as u64,
+        state: OpState::parse(&state)?,
+        started_at: ts(row.get(8)?)?,
+        finished_at: row.get::<_, Option<i64>>(9)?.map(ts).transpose()?,
+        error: row.get(10)?,
+        source_hash_hex: row.get(11)?,
+        undo_status: UndoStatus::parse(&undo),
+        dest_modified_ns: row.get(13)?,
+        replaced: row.get::<_, Option<String>>(14)?.map(PathBuf::from),
     })
 }
