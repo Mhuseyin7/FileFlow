@@ -81,6 +81,7 @@ export interface PlannedOp {
   collision: CollisionPolicy;
   reasons: string[];
   warnings: string[];
+  tags: string[];
 }
 
 export interface PreviewSummary {
@@ -89,24 +90,51 @@ export interface PreviewSummary {
   warnings: number;
 }
 
+export interface PlanIssue {
+  path: string;
+  rule_name: string;
+  message: string;
+}
+
 export interface PreviewResult {
   ops: PlannedOp[];
   summary: PreviewSummary;
   errors: { op_id: string; message: string }[];
+  issues: PlanIssue[];
 }
+
+export type RunStatus = "done" | "skipped" | "needs_review" | "failed";
 
 export interface RunOutcome {
   op_id: string;
   ok: boolean;
+  status: RunStatus;
   destination: string | null;
   error: string | null;
 }
 
+export interface ReviewItem {
+  id: string;
+  path: string;
+  rule_id: string;
+  rule_name: string;
+  kind: string;
+  reason: string;
+  added_at: number;
+}
+
+export interface Recovery {
+  op_id: string;
+  path: string | null;
+  outcome: "not_started" | "completed" | "needs_attention";
+  note: string;
+}
+
 export type OpState =
-  | "planned"
   | "executing"
   | "completed"
   | "failed"
+  | "skipped"
   | "undoing"
   | "undone";
 export type UndoStatus = "not_applicable" | "available" | "unsafe" | "done";
@@ -125,4 +153,6 @@ export interface JournalEntry {
   error: string | null;
   source_hash_hex: string | null;
   undo_status: UndoStatus;
+  dest_modified_ns: number | null;
+  replaced: string | null;
 }

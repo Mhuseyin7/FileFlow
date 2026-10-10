@@ -6,6 +6,8 @@ import type {
   JournalEntry,
   PlannedOp,
   PreviewResult,
+  Recovery,
+  ReviewItem,
   Rule,
   RunOutcome,
 } from "./types";
@@ -31,12 +33,44 @@ export const api = {
   getSandboxRoots: () => invoke<string[]>("get_sandbox_roots"),
   setSandboxRoots: (roots: string[]) =>
     invoke<void>("set_sandbox_roots", { roots }),
-  preview: (root: string) => invoke<PreviewResult>("preview", { root }),
+  preview: (root: string, ruleId?: string) =>
+    invoke<PreviewResult>("preview", { root, ruleId: ruleId ?? null }),
   run: (ops: PlannedOp[], dryRun: boolean) =>
     invoke<RunOutcome[]>("run", { ops, dryRun }),
   journal: (limit: number) => invoke<JournalEntry[]>("journal", { limit }),
   undo: (opId: string) => invoke<void>("undo", { opId }),
+  recovered: () => invoke<Recovery[]>("recovered"),
+  reviewQueue: () => invoke<ReviewItem[]>("review_queue"),
+  resolveReview: (id: string, resolution: string) =>
+    invoke<void>("resolve_review", { id, resolution }),
+  startWatcher: () => invoke<void>("start_watcher"),
+  stopWatcher: () => invoke<void>("stop_watcher"),
+  watcherRunning: () => invoke<boolean>("watcher_running"),
 };
+
+/** Runs `fn` whenever the background engine reports a change. Returns an
+ * unsubscribe function. A no-op outside the desktop shell. */
+export async function onEngineChange(fn: () => void): Promise<() => void> {
+  if (!tauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen("fileflow://changed", () => fn());
+}
+
+/** Lets the user pick a folder with the native dialog. `null` if cancelled
+ * or when running outside the desktop shell. */
+export async function pickFolder(): Promise<string | null> {
+  if (!tauri) return null;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ directory: true, multiple: false });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Turns a rejected invoke() into text the UI can show. */
+export function errorText(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
 
 // ---------------------------------------------------------------------------
 // Browser dev stub. Returns plausible mock data so the UI can be styled and
@@ -108,16 +142,19 @@ async function stubInvoke<T>(
               "✓ folder = ~/Downloads",
             ],
             warnings: [],
+            tags: [],
           },
         ],
         summary: { count: 1, total_bytes: 384_120, warnings: 0 },
         errors: [],
+        issues: [],
       } as unknown as T;
     case "run": {
       const ops = (args?.ops ?? []) as PlannedOp[];
       const outcomes: RunOutcome[] = ops.map((op) => ({
         op_id: op.id,
         ok: true,
+        status: "done",
         destination: op.destination,
         error: null,
       }));
@@ -136,6 +173,8 @@ async function stubInvoke<T>(
           error: null,
           source_hash_hex: null,
           undo_status: "available",
+          dest_modified_ns: null,
+          replaced: null,
         }));
       }
       return outcomes as unknown as T;
@@ -152,6 +191,15 @@ async function stubInvoke<T>(
       };
       return undefined as unknown as T;
     }
+    case "recovered":
+    case "review_queue":
+      return [] as unknown as T;
+    case "resolve_review":
+    case "start_watcher":
+    case "stop_watcher":
+      return undefined as unknown as T;
+    case "watcher_running":
+      return false as unknown as T;
     default:
       throw new Error(`stub invoke: unknown command ${cmd}`);
   }
