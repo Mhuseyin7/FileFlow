@@ -1,28 +1,46 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, errorText, pickFolder } from "../api";
 import { useT } from "../i18n";
 
 export function Folders() {
   const { t } = useT();
   const [roots, setRoots] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
 
   async function refresh() {
     setRoots(await api.getSandboxRoots());
   }
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh().catch((e) => setMessage(errorText(e)));
+  }, []);
 
-  async function add() {
-    const path = draft.trim();
-    if (!path) return;
-    const next = Array.from(new Set([...roots, path]));
-    await api.setSandboxRoots(next);
-    setDraft("");
+  async function grant(path: string) {
+    const p = path.trim();
+    if (!p) return;
+    setMessage(null);
+    try {
+      await api.setSandboxRoots(Array.from(new Set([...roots, p])));
+      setDraft("");
+    } catch (e) {
+      // The backend refuses drive roots, system folders and missing paths.
+      setMessage(errorText(e));
+    }
     await refresh();
   }
 
+  async function browse() {
+    const picked = await pickFolder();
+    if (picked) await grant(picked);
+  }
+
   async function remove(p: string) {
-    await api.setSandboxRoots(roots.filter((r) => r !== p));
+    setMessage(null);
+    try {
+      await api.setSandboxRoots(roots.filter((r) => r !== p));
+    } catch (e) {
+      setMessage(errorText(e));
+    }
     await refresh();
   }
 
@@ -41,13 +59,21 @@ export function Folders() {
             onChange={(e) => setDraft(e.target.value)}
             placeholder="C:\Users\you\Downloads"
             onKeyDown={(e) => {
-              if (e.key === "Enter") add();
+              if (e.key === "Enter") grant(draft);
             }}
           />
-          <button className="btn-primary" onClick={add}>
+          <button className="btn" onClick={browse}>
+            {t("folders.browse")}
+          </button>
+          <button className="btn-primary" onClick={() => grant(draft)}>
             {t("folders.add")}
           </button>
         </div>
+        {message && (
+          <div className="mt-3 rounded-md border border-danger bg-danger-soft px-3 py-2 text-xs text-danger">
+            {message}
+          </div>
+        )}
       </div>
 
       <ul className="card divide-y divide-border">
