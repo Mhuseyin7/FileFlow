@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Nav, type PageKey } from "./components/Nav";
 import { Dashboard } from "./pages/Dashboard";
 import { Rules } from "./pages/Rules";
@@ -7,12 +7,20 @@ import { Review } from "./pages/Review";
 import { Folders } from "./pages/Folders";
 import { Templates } from "./pages/Templates";
 import { Settings } from "./pages/Settings";
-import { isStubbed } from "./api";
+import { api, isStubbed } from "./api";
 import { useT } from "./i18n";
 
 export function App() {
   const [page, setPage] = useState<PageKey>("dashboard");
   const { t } = useT();
+  const [attention, setAttention] = useState(0);
+
+  useEffect(() => {
+    api
+      .recovered()
+      .then((r) => setAttention(r.filter((x) => x.outcome === "needs_attention").length))
+      .catch(() => {});
+  }, []);
 
   return (
     <div className="flex h-full">
@@ -21,6 +29,11 @@ export function App() {
         {isStubbed && (
           <div className="border-b border-border bg-warn-soft px-4 py-2 text-xs text-warn">
             {t("app.dev_banner")}
+          </div>
+        )}
+        {attention > 0 && (
+          <div className="border-b border-border bg-warn-soft px-4 py-2 text-xs text-warn">
+            {t("app.recovered").replace("{n}", String(attention))}
           </div>
         )}
         <div className="mx-auto max-w-6xl px-6 py-6">
