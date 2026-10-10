@@ -117,7 +117,7 @@ fn filename_regex_bad_pattern_does_not_panic() {
     });
     let out = evaluate(&node, &f, OffsetDateTime::now_utc());
     assert!(!out.matched);
-    assert!(out.reasons[0].contains("invalid"));
+    assert!(out.reasons[0].contains("unknown"));
 }
 
 #[test]
