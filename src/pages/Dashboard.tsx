@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, onEngineChange } from "../api";
 import type { JournalEntry, Rule } from "../types";
 import type { PageKey } from "../components/Nav";
 import { humanBytes } from "../components/Bytes";
@@ -10,9 +10,18 @@ export function Dashboard({ onNavigate }: { onNavigate: (k: PageKey) => void }) 
   const [rules, setRules] = useState<Rule[]>([]);
   const [entries, setEntries] = useState<JournalEntry[]>([]);
 
+  const [reviewCount, setReviewCount] = useState(0);
+
   useEffect(() => {
-    api.listRules().then(setRules);
-    api.journal(50).then(setEntries);
+    const load = () => {
+      api.listRules().then(setRules);
+      api.journal(50).then(setEntries);
+      api.reviewQueue().then((q) => setReviewCount(q.length));
+    };
+    load();
+    let off = () => {};
+    onEngineChange(load).then((fn) => (off = fn));
+    return () => off();
   }, []);
 
   const today = new Date().toDateString();
@@ -23,7 +32,6 @@ export function Dashboard({ onNavigate }: { onNavigate: (k: PageKey) => void }) 
   const bytes = todays
     .filter((e) => e.state === "completed")
     .reduce((s, e) => s + e.size, 0);
-  const reviewCount = entries.filter((e) => e.kind === "review").length;
   const activeRules = rules.filter((r) => r.enabled).length;
 
   return (
