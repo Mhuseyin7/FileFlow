@@ -35,3 +35,6 @@ tauri-plugin-dialog = { version = "2.0.0-beta", optional = true }
 #     cargo build -p fileflow-app --features tauri
 default = []
 tauri = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-build"]
+
+[dev-dependencies]
+tempfile.workspace = true
