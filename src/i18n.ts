@@ -83,6 +83,10 @@ const dict = {
     "folders.add": "Grant access",
     "folders.empty": "No folders granted yet.",
     "folders.revoke": "Revoke",
+    "folders.browse": "Browse…",
+    "review.dismiss": "Dismiss",
+    "app.recovered":
+      "FileFlow was closed unexpectedly. {n} interrupted operation(s) need a look; nothing was deleted. Open Activity for details.",
 
     // Templates
     "templates.title": "Templates",
@@ -176,6 +180,10 @@ const dict = {
     "folders.add": "Erişim ver",
     "folders.empty": "Henüz klasör izni verilmedi.",
     "folders.revoke": "Kaldır",
+    "folders.browse": "Gözat…",
+    "review.dismiss": "Yoksay",
+    "app.recovered":
+      "FileFlow beklenmedik şekilde kapanmış. {n} yarım kalan işlem kontrol gerektiriyor; hiçbir şey silinmedi. Ayrıntılar için Etkinlik sayfasına bakın.",
 
     // Templates
     "templates.title": "Şablonlar",
