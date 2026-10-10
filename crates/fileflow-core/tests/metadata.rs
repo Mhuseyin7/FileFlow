@@ -39,12 +39,25 @@ fn build_mini_pdf(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn pdf_tempfile() -> anyhow::Result<NamedTempFile> {
+    Ok(tempfile::Builder::new().suffix(".pdf").tempfile()?)
+}
+
 #[test]
 fn read_pdf_returns_page_count() -> anyhow::Result<()> {
-    let f = NamedTempFile::new()?;
+    let f = pdf_tempfile()?;
     build_mini_pdf(f.path())?;
     let meta = read_pdf(f.path()).expect("pdf parses");
     assert_eq!(meta.page_count, Some(1));
+    Ok(())
+}
+
+#[test]
+fn read_pdf_ignores_files_that_are_not_pdfs_by_extension() -> anyhow::Result<()> {
+    // A valid PDF with the wrong extension must not be parsed at all.
+    let f = NamedTempFile::new()?;
+    build_mini_pdf(f.path())?;
+    assert!(read_pdf(f.path()).is_none());
     Ok(())
 }
 

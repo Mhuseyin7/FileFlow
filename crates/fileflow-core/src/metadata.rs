@@ -20,9 +20,31 @@ pub struct PdfMeta {
     pub title: Option<String>,
 }
 
+/// Metadata parsers run on untrusted downloads, and the PDF parser loads the
+/// whole file into memory. Only files with a matching extension and a
+/// sensible size are parsed; everything else is "unknown".
+#[cfg(feature = "metadata")]
+const MAX_PDF_BYTES: u64 = 64 * 1024 * 1024;
+#[cfg(feature = "metadata")]
+const MAX_PHOTO_BYTES: u64 = 128 * 1024 * 1024;
+#[cfg(feature = "metadata")]
+const PHOTO_EXTENSIONS: &[&str] = &["jpg", "jpeg", "tif", "tiff", "heic", "heif", "png", "webp"];
+
+#[cfg(feature = "metadata")]
+fn eligible(path: &Path, extensions: &[&str], max_bytes: u64) -> bool {
+    let ext_ok = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| extensions.iter().any(|x| x.eq_ignore_ascii_case(e)));
+    ext_ok && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= max_bytes)
+}
+
 #[cfg(feature = "metadata")]
 pub fn read_photo(path: &Path) -> Option<PhotoMeta> {
     use exif::{In, Tag};
+    if !eligible(path, PHOTO_EXTENSIONS, MAX_PHOTO_BYTES) {
+        return None;
+    }
     let file = std::fs::File::open(path).ok()?;
     let mut buf = std::io::BufReader::new(&file);
     let exif = exif::Reader::new().read_from_container(&mut buf).ok()?;
@@ -51,6 +73,9 @@ pub fn read_photo(_path: &Path) -> Option<PhotoMeta> {
 
 #[cfg(feature = "metadata")]
 pub fn read_pdf(path: &Path) -> Option<PdfMeta> {
+    if !eligible(path, &["pdf"], MAX_PDF_BYTES) {
+        return None;
+    }
     let doc = lopdf::Document::load(path).ok()?;
     let page_count = Some(doc.get_pages().len() as u32);
     let title = doc
